@@ -5,15 +5,17 @@ Complete integration of JupyterHub with XNAT on Kubernetes.
 ---
 
 ## 📋 Table of Contents
-- [Architecture Overview](#architecture-overview)
-- [Features](#features)
-- [Prerequisites](#prerequisites)
-- [Installation Steps](#installation-steps)
-- [Configuration](#configuration)
-- [Testing](#testing)
-- [User Workflow](#user-workflow)
-- [Security](#security)
-- [Troubleshooting](#troubleshooting)
+- [🏗️ Architecture Overview](#️-architecture-overview)
+- [📦 Prerequisites](#-prerequisites)
+- [🚀 Installation Steps](#-installation-steps)
+- [⚙️ Configuration](#️-configuration)
+- [🧪 Testing](#-testing)
+- [👥 User Workflow](#-user-workflow)
+- [🔒 Security](#-security)
+- [🔧 Troubleshooting](#-troubleshooting)
+- [📚 Additional Documentation](#-additional-documentation)
+- [📄 License](#-license)
+- [✅ Installation Checklist](#-installation-checklist)
 
 ---
 
