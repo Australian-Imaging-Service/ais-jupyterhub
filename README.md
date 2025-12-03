@@ -488,8 +488,6 @@ Use this checklist to track your installation:
 - [ ] XNAT plugin configured (`7-XNAT-CONFIGURATION.md`)
 - [ ] Test user workflow completed
 - [ ] Production settings reviewed
-- [ ] Security hardening applied
-- [ ] Monitoring configured
 
 ---
 
