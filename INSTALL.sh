@@ -131,7 +131,7 @@ if [ $VERIFY_STATUS -eq 0 ]; then
     echo -e "${GREEN}✓ All components installed and verified${NC}"
     echo ""
     echo "Next Steps:"
-    echo "1. Configure XNAT Plugin (see 7-XNAT-CONFIGURATION.md)"
+    echo "1. Configure XNAT Plugin (see XNAT-CONFIGURATION.md)"
     echo "2. Enable JupyterHub for projects in XNAT"
     echo "3. Test user workflow"
     echo ""
@@ -145,7 +145,7 @@ if [ $VERIFY_STATUS -eq 0 ]; then
     echo ""
     echo "Documentation:"
     echo "  README.md - Overview and architecture"
-    echo "  7-XNAT-CONFIGURATION.md - XNAT plugin setup"
+    echo "  XNAT-CONFIGURATION.md - XNAT plugin setup"
     echo "  TROUBLESHOOTING.md - Common issues and solutions"
     echo ""
 else

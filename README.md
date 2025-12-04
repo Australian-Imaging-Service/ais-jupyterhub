@@ -247,7 +247,7 @@ Runs comprehensive checks:
 
 ### Step 8: Configure XNAT Plugin
 
-Follow detailed guide in `7-XNAT-CONFIGURATION.md`:
+Follow detailed guide in `XNAT-CONFIGURATION.md`:
 
 1. Login to XNAT admin interface
 2. Configure JupyterHub connection settings
@@ -461,7 +461,7 @@ See guide: `TROUBLESHOOTING.md`
 ## 📚 Additional Documentation
 
 - **Installation:** This README
-- **XNAT Configuration:** `7-XNAT-CONFIGURATION.md`
+- **XNAT Configuration:** `XNAT-CONFIGURATION.md`
 - **Troubleshooting:** `TROUBLESHOOTING.md`
 - **Architecture Diagrams:** See above
 
@@ -490,7 +490,7 @@ Use this checklist to track your installation:
 - [ ] NFS PVC created and bound (`4-nfs-pvc.yaml`)
 - [ ] JupyterHub installed (`6-install-jupyterhub.sh`)
 - [ ] Verification passed (`8-verify.sh`)
-- [ ] XNAT plugin configured (`7-XNAT-CONFIGURATION.md`)
+- [ ] XNAT plugin configured (`XNAT-CONFIGURATION.md`)
 - [ ] Test user workflow completed
 - [ ] Production settings reviewed
 

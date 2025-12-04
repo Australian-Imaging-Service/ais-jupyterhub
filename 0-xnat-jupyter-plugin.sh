@@ -21,6 +21,7 @@ kubectl -n storage cp xnat-jupyterhub-plugin-1.1.1.jar \
   $NFS_POD:/exports/xnat/plugins/
 
 # Restart XNAT to load plugin
+# !!!!Beware this will wipe any ephemeral data in XNAT pods
 echo "[4/4] Restarting XNAT..."
 kubectl -n ais-xnat rollout restart statefulset/xnat-web
 
