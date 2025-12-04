@@ -55,7 +55,7 @@ Complete integration of JupyterHub with XNAT on Kubernetes.
 │  PostgreSQL   │    │   Hub    │  │   Proxy    │
 │  (metadata)   │    │   DB     │  │  (route)   │
 └───────────────┘    └──────────┘  └────────────┘
-        │             Longhorn          │
+        │                               │
         │                               │
         ▼                               ▼
 ┌──────────────────────────────────────────────┐
