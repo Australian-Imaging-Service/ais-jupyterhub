@@ -2,6 +2,11 @@
 
 Complete integration of JupyterHub with XNAT on Kubernetes.
 
+(Do a quick complete install by using: `./INSTALL.sh`)
+
+
+**Important Note:** Replace `<username>`, `<jupyter-token>`, and domain names with your actual deployment values.
+
 ---
 
 ## 📋 Table of Contents
@@ -56,7 +61,7 @@ Complete integration of JupyterHub with XNAT on Kubernetes.
 │           User Notebook Pods                 │
 │  ┌─────────────────────────────────────┐     │
 │  │  /home/jovyan → Longhorn PVC        │     │
-│  │  /data/projects/X → NFS subPath│    │     |
+│  │  /data/projects/X → NFS subPath     │     │
 │  │  /data/xnat/workspace → NFS         │     │
 │  └─────────────────────────────────────┘     │
 └──────────────────────────────────────────────┘
@@ -107,7 +112,7 @@ Complete integration of JupyterHub with XNAT on Kubernetes.
   
 - **Internal Services:**
   - `xnat-web.ais-xnat.svc.cluster.local` (XNAT API)
-  - `proxy-public.jupyter.svc.cluster.local:8081` (JupyterHub API)
+  - `proxy-public.jupyter.svc.cluster.local` (JupyterHub API)
 
 ---
 
@@ -251,7 +256,7 @@ Follow detailed guide in `7-XNAT-CONFIGURATION.md`:
 5. Test user workflow
 
 **Required Settings:**
-- JupyterHub URL: `http://proxy-public.jupyter.svc.cluster.local:8081/jupyter`
+- JupyterHub URL: `http://proxy-public.jupyter.svc.cluster.local/jupyter`
 - Service Token: `<generated-service-token>`
 
 ---
@@ -332,8 +337,8 @@ kubectl exec -n jupyter $HUB_POD -- \
 
 # Test JupyterHub API
 kubectl exec -n jupyter $HUB_POD -- \
-  curl -H "Authorization: token eda886c63564930a7f21ad8465463bf9555bad7d1dfa0a2fb259ac556ea8420e" \
-  http://proxy-public.jupyter.svc.cluster.local:8081/jupyter/hub/api
+  curl -H "Authorization: token <jupyter-token>" \
+  http://proxy-public.jupyter.svc.cluster.local/jupyter/hub/api
 ```
 
 ### Test 2: User Spawn
@@ -341,8 +346,8 @@ kubectl exec -n jupyter $HUB_POD -- \
 ```bash
 # Start test user's server
 curl -X POST \
-  -H "Authorization: token eda886c63564930a7f21ad8465463bf9555bad7d1dfa0a2fb259ac556ea8420e" \
-  http://proxy-public.jupyter.svc.cluster.local:8081/jupyter/hub/api/users/testuser/server
+  -H "Authorization: token <jupyter-token>" \
+  http://proxy-public.jupyter.svc.cluster.local/jupyter/hub/api/users/testuser/server
 
 # Check pod creation
 kubectl get pods -n jupyter | grep jupyter-testuser
@@ -447,7 +452,7 @@ kubectl create secret generic jupyterhub-secrets -n jupyter \
 
 ## 🔧 Troubleshooting
 
-See guide: `9-TROUBLESHOOTING.md`
+See guide: `TROUBLESHOOTING.md`
 
 
 
@@ -457,7 +462,7 @@ See guide: `9-TROUBLESHOOTING.md`
 
 - **Installation:** This README
 - **XNAT Configuration:** `7-XNAT-CONFIGURATION.md`
-- **Troubleshooting:** `9-TROUBLESHOOTING.md`
+- **Troubleshooting:** `TROUBLESHOOTING.md`
 - **Architecture Diagrams:** See above
 
 

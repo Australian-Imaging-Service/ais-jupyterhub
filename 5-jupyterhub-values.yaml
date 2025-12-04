@@ -1,0 +1,465 @@
+# JupyterHub Configuration for XNAT Integration (Hub 5.4.1 / Z2JH 4.3.x)
+# ==========================================================
+# - Internal culling: 2 hours idle timeout (aggressive, pod-level)
+# - External culling: 24 hours idle timeout (backup, hub-level)
+
+# ===============================================================================================================================
+
+hub:
+  baseUrl: /jupyter
+  config:
+    JupyterHub:
+      authenticator_class: generic-oauth
+      base_url: /jupyter
+
+    GenericOAuthenticator:
+      client_id: "70870f7a-f70e-4acd-829f-0f611f1d40de"
+      client_secret: "wdNMMmFGmufaMsP6txVEolL9vbNMyuZ0CFQuaxzpdZGqKFk27QquTQ6FOGChH9GmNXx4Vkmwkok2"
+      oauth_callback_url: "https://xnat-test.ssdsorg.cloud.edu.au/jupyter/hub/oauth_callback"
+      authorize_url: "https://central.test.aaf.edu.au/providers/op/authorize"
+      token_url: "https://central.test.aaf.edu.au/providers/op/token"
+      userdata_url: "https://central.test.aaf.edu.au/providers/op/userinfo"
+      login_service: "AAF"
+      username_claim: "sub"
+      scope: [openid, profile, email, eduperson_principal_name, eduperson_scoped_affiliation, eduperson_affiliation, eduperson_assurance, schac_home_organization, aueduperson]
+      allow_all: true
+    
+    Authenticator:
+      enable_auth_state: false
+      refresh_pre_spawn: false
+  
+  # External culler service config
+  loadRoles:
+    user-cull:
+      scopes:
+        - list:users
+        - read:users:activity
+        - read:servers
+        - delete:servers
+        - admin:users
+      services:
+        - user-cull
+  
+  services:
+    xnat-service:
+      admin: true
+      apiToken: "eda886c63564930a7f21ad8465463bf9555bad7d1dfa0a2fb259ac556ea8420e"
+    
+    # External jupter-idle-culler - 24 hour timeout
+    user-cull:
+      command:
+        - python3
+        - -m
+        - jupyterhub_idle_culler
+        - --timeout=86400
+        - --cull-every=3600
+        - --cull-users
+        - --url=http://localhost:8081/jupyter/hub/api
+
+  extraEnv:
+    JUPYTERHUB_CRYPT_KEY_HEX: "62c5252a18d4c48ea3b6ca199f501c439a58be3521d01f0055518a1d2a46c3fe"
+    XNAT_HOST: "xnat-web.ais-xnat.svc.cluster.local"
+    XNAT_USER: "admin"
+    XNAT_PASSWORD: "admin"
+
+  extraConfig:
+    00_set_crypt_key: |
+      import os, base64, binascii
+      hexkey = os.environ.get("JUPYTERHUB_CRYPT_KEY_HEX", "").strip()
+      if not hexkey:
+        raise SystemExit("JUPYTERHUB_CRYPT_KEY_HEX missing")
+      try:
+        raw = binascii.unhexlify(hexkey)
+      except binascii.Error as e:
+        raise SystemExit(f"Invalid hex key: {e}")
+      fernet_key = base64.urlsafe_b64encode(raw)
+      c.CryptKeeper.keys = [fernet_key]
+
+    01_add_xnat_username_column: |
+      from sqlalchemy import Column, String
+      from jupyterhub import orm
+      
+      # Adding xnat_username column to User model
+      if not hasattr(orm.User, 'xnat_username'):
+          orm.User.xnat_username = Column(String(255), nullable=True)
+
+    02_username_normalization: |
+      from oauthenticator.generic import GenericOAuthenticator
+      from jupyterhub.apihandlers.users import UserAPIHandler, UserServerAPIHandler
+      from jupyterhub.handlers import BaseHandler
+      
+      # Shared normalize function
+      def normalize_username(username):
+          """
+          Normalize to aaf_<lowercase> format for consistent naming.
+          Returns: (normalized, original)
+          """
+          if not username:
+              return username, username
+          
+          original = username
+          
+          # Strip existing aaf_ prefix if exists
+          if username.startswith('aaf_'):
+              username = username[4:]
+          
+          # Add aaf_ prefix and lowercase
+          normalized = f'aaf_{username.lower()}'
+          
+          return normalized, original
+      
+      # Apply to OAuth authenticator
+      def normalize_aaf(self, username):
+          normalized, original = normalize_username(username)
+          return normalized
+      
+      GenericOAuthenticator.normalize_username = normalize_aaf
+      
+      # Override authenticate to store original username
+      original_authenticate = GenericOAuthenticator.authenticate
+      
+      async def authenticate_with_storage(self, handler, data=None, **kwargs):
+          result = await original_authenticate(self, handler, data, **kwargs)
+          if result and isinstance(result, dict):
+              username = result.get('name')
+              if username:
+                  # Get original from OAuth response
+                  user_info = getattr(handler, 'user_info', None)
+                  if user_info:
+                      original_username = user_info.get('sub', username)
+                      # Store in database
+                      user = self.db.query(self.orm.User).filter_by(name=username).first()
+                      if user and not user.xnat_username:
+                          user.xnat_username = original_username
+                          self.db.commit()
+          return result
+      
+      GenericOAuthenticator.authenticate = authenticate_with_storage
+      
+      # Patch API handlers to normalize usernames from XNAT
+      original_user_get = UserAPIHandler.get
+      original_user_post = UserAPIHandler.post
+      original_user_delete = UserAPIHandler.delete
+      original_user_patch = UserAPIHandler.patch
+      
+      async def user_get_wrapper(self, user_name):
+          normalized, original = normalize_username(user_name)
+          return await original_user_get(self, normalized)
+      
+      async def user_post_wrapper(self, user_name):
+          normalized, original = normalize_username(user_name)
+          result = await original_user_post(self, normalized)
+          
+          # Store original username in database
+          user = self.find_user(normalized)
+          if user and not user.xnat_username:
+              user.xnat_username = original
+              self.db.commit()
+          
+          return result
+      
+      async def user_delete_wrapper(self, user_name):
+          normalized, original = normalize_username(user_name)
+          return await original_user_delete(self, normalized)
+      
+      async def user_patch_wrapper(self, user_name):
+          normalized, original = normalize_username(user_name)
+          return await original_user_patch(self, normalized)
+      
+      UserAPIHandler.get = user_get_wrapper
+      UserAPIHandler.post = user_post_wrapper
+      UserAPIHandler.delete = user_delete_wrapper
+      UserAPIHandler.patch = user_patch_wrapper
+      
+      # Patch server API handlers
+      original_server_post = UserServerAPIHandler.post
+      original_server_delete = UserServerAPIHandler.delete
+      
+      async def server_post_wrapper(self, user_name, server_name=''):
+          normalized, original = normalize_username(user_name)
+          
+          # Ensure user exists and has xnat_username stored
+          user = self.find_user(normalized)
+          if user and not user.xnat_username:
+              user.xnat_username = original
+              self.db.commit()
+          
+          return await original_server_post(self, normalized, server_name)
+      
+      async def server_delete_wrapper(self, user_name, server_name=''):
+          normalized, original = normalize_username(user_name)
+          return await original_server_delete(self, normalized, server_name)
+      
+      UserServerAPIHandler.post = server_post_wrapper
+      UserServerAPIHandler.delete = server_delete_wrapper
+
+    03_xnat_pre_spawn_hook: |
+      async def pre_spawn_hook(spawner):
+          import requests
+          from requests.auth import HTTPBasicAuth
+          import os
+          
+          # Get original XNAT username from database
+          xnat_username = spawner.user.xnat_username or spawner.user.name
+          
+          spawner.log.info(f"[XNAT] Pre-spawn: jh_user={spawner.user.name}, xnat_user={xnat_username}")
+          
+          # PRESERVE existing volumes (home directory)
+          existing_volumes = getattr(spawner, 'volumes', {})
+          existing_mounts = getattr(spawner, 'volume_mounts', {})
+          
+          if isinstance(existing_volumes, dict):
+              existing_volumes = list(existing_volumes.values())
+          if isinstance(existing_mounts, dict):
+              existing_mounts = list(existing_mounts.values())
+          
+          spawner.log.info(f"[XNAT] Home volume preserved: {existing_volumes}")
+          
+          # Add XNAT volumes
+          xnat_volumes = [
+              {
+                  'name': 'xnat-gpfs',
+                  'persistentVolumeClaim': {'claimName': 'xnat-gpfs'}
+              },
+              {
+                  'name': 'shm',
+                  'emptyDir': {'medium': 'Memory', 'sizeLimit': '2Gi'}
+              }
+          ]
+          
+          xnat_mounts = [
+              {'name': 'shm', 'mountPath': '/dev/shm'}
+          ]
+          
+          # Combine as lists
+          spawner.volumes = existing_volumes + xnat_volumes
+          spawner.volume_mounts = existing_mounts + xnat_mounts
+
+          # DEBUG: Validate final configuration
+          spawner.log.info("="*60)
+          spawner.log.info("[XNAT] FINAL VOLUME CONFIGURATION:")
+          spawner.log.info(f"[XNAT] Total volumes: {len(spawner.volumes)}")
+          for i, vol in enumerate(spawner.volumes):
+              spawner.log.info(f"[XNAT]   Volume {i}: name={vol.get('name')}, type={list(vol.keys())}")
+
+          spawner.log.info(f"[XNAT] Total mounts: {len(spawner.volume_mounts)}")
+          for i, mount in enumerate(spawner.volume_mounts):
+              spawner.log.info(f"[XNAT]   Mount {i}: {mount.get('name')} -> {mount.get('mountPath')}")
+
+          # Find home directory mount
+          home_mount = next((m for m in spawner.volume_mounts if m.get('mountPath') == '/home/jovyan'), None)
+          if home_mount:
+              spawner.log.info(f"[XNAT] ✓ Home directory mount FOUND: {home_mount.get('name')}")
+          else:
+              spawner.log.error("[XNAT] ✗ Home directory mount MISSING!")
+
+          spawner.log.info("="*60)
+          
+          # Create workspace symlink
+          init_script = f"""
+          set -e
+          echo "[INIT] Starting workspace setup..."
+          mkdir -p /data/xnat/workspaces/users
+          
+          if [ -d "/data/xnat/workspaces/users/{xnat_username}" ]; then
+              echo "[INIT] Found XNAT workspace: {xnat_username}"
+              if [ "{xnat_username}" != "{spawner.user.name}" ]; then
+                  if [ ! -e "/data/xnat/workspaces/users/{spawner.user.name}" ]; then
+                      ln -s "{xnat_username}" "/data/xnat/workspaces/users/{spawner.user.name}"
+                      echo "[INIT] Created symlink: {spawner.user.name} -> {xnat_username}"
+                  fi
+              fi
+          else
+              mkdir -p "/data/xnat/workspaces/users/{spawner.user.name}"
+              chown 1000:100 "/data/xnat/workspaces/users/{spawner.user.name}"
+              chmod 755 "/data/xnat/workspaces/users/{spawner.user.name}"
+              echo "[INIT] Created new workspace: {spawner.user.name}"
+          fi
+          
+          echo "[INIT] Workspace setup complete"
+          """
+          
+          spawner.init_containers = [
+              {
+                  'name': 'workspace-setup',
+                  'image': 'busybox:1.35',
+                  'command': ['sh', '-c'],
+                  'args': [init_script],
+                  'volumeMounts': [
+                      {'name': 'xnat-gpfs', 'mountPath': '/data/xnat'}
+                  ],
+                  'securityContext': {'runAsUser': 0}
+              }
+          ]
+          
+          # Add workspace mount
+          spawner.volume_mounts.append({
+              'name': 'xnat-gpfs',
+              'mountPath': f'/data/xnat/workspaces/users/{spawner.user.name}',
+              'subPath': f'workspaces/users/{spawner.user.name}',
+              'readOnly': False
+          })
+
+          # Add XNAT-compatible workspace mount (same storage, different path)
+          spawner.volume_mounts.append({
+              'name': 'xnat-gpfs',
+              'mountPath': f'/workspace/{xnat_username}',
+              'subPath': f'workspaces/users/{spawner.user.name}',
+              'readOnly': False
+          })
+          spawner.log.info(f"[XNAT] Dual workspace mount created")
+          
+          # Query XNAT for project mounts
+          try:
+              xnat_host = os.getenv('XNAT_HOST', 'xnat-web.ais-xnat.svc.cluster.local')
+              xnat_user = os.getenv('XNAT_USER', 'admin')
+              xnat_pass = os.getenv('XNAT_PASSWORD', 'admin')
+              
+              response = requests.get(
+                  f"http://{xnat_host}/xapi/jupyterhub/users/{xnat_username}/server/user-options",
+                  auth=HTTPBasicAuth(xnat_user, xnat_pass),
+                  timeout=5
+              )
+              
+              if response.status_code == 200:
+                  options = response.json()
+                  
+                  # Parse XNAT's task_template structure
+                  mounts = options.get('task_template', {}).get('container_spec', {}).get('mounts', [])
+                  
+                  for mount in mounts:
+                      source = mount.get('source', '')
+                      target = mount.get('target', '')
+                      read_only = mount.get('read_only', True)
+                      
+                      # Skip workspace mount (already handled)
+                      if 'workspaces' in source:
+                          continue
+                      
+                      # Convert source path to subPath
+                      # /data/xnat/archive/002/arc001 -> archive/002/arc001
+                      if source.startswith('/data/xnat/'):
+                          subpath = source[len('/data/xnat/'):]
+                      else:
+                          continue
+                      
+                      spawner.volume_mounts.append({
+                          'name': 'xnat-gpfs',
+                          'mountPath': target,
+                          'subPath': subpath,
+                          'readOnly': read_only
+                      })
+                      spawner.log.info(f"[XNAT] Mounted: {target} -> {subpath}")
+                  
+                  # Apply resource limits
+                  resources = options.get('task_template', {}).get('resources', {})
+                  if 'cpu_limit' in resources:
+                      spawner.cpu_limit = resources['cpu_limit']
+                  if 'mem_limit' in resources:
+                      spawner.mem_limit = resources['mem_limit']
+                  
+                  # Apply environment variables (filter out JupyterHub-specific ones)
+                  env = options.get('task_template', {}).get('container_spec', {}).get('env', {})
+                  filtered_env = {
+                      k: v for k, v in env.items() 
+                      if k not in ['JUPYTERHUB_ROOT_DIR', 'XDG_CONFIG_HOME']
+                  }
+                  spawner.environment.update(filtered_env)
+                  spawner.log.info(f"[XNAT] Applied filtered env vars: {list(filtered_env.keys())}")
+              else:
+                  spawner.log.warning(f"[XNAT] API returned {response.status_code}, no projects mounted")
+                  
+          except Exception as e:
+              spawner.log.warning(f"[XNAT] API error: {e}, continuing without project mounts")
+      
+      c.KubeSpawner.pre_spawn_hook = pre_spawn_hook
+
+  db:
+    type: sqlite-pvc
+    pvc:
+      storageClassName: longhorn
+      storage: 5Gi
+
+proxy:
+  service:
+    type: ClusterIP
+
+singleuser:
+  defaultUrl: /lab
+
+  extraFiles:
+    # Internal culling configuration (2 hour aggressive timeout)
+    internal_culling_config:
+      mountPath: /etc/jupyter/jupyter_server_config.py
+      stringData: |
+        # === INTERNAL CULLING CONFIGURATION (Primary) ===
+        # This provides aggressive, pod-level culling as the first line of defense
+        
+        # 1. Pod Shutdown (ServerApp)
+        # Shut down the server (and thus the pod) after 2 hours of no kernel activity
+        # This is primary culler - it's aggressive and runs inside each pod
+        c.ServerApp.shutdown_no_activity_timeout = 7200  # 2 hours in seconds
+        
+        # 2. Kernel Culling (MappingKernelManager)
+        # Cull individual kernels that are idle for 1.5 hours
+        c.MappingKernelManager.cull_idle_timeout = 5400  # 1.5 hours
+        # Check every 10 minutes for idle kernels
+        c.MappingKernelManager.cull_interval = 600
+        # Cull even if the browser tab is open (connected)
+        c.MappingKernelManager.cull_connected = True
+        # CRITICAL: Do NOT cull if the kernel is busy (processing code)
+        c.MappingKernelManager.cull_busy = False
+        
+        # 3. Terminal Culling
+        # Cull inactive terminals after 2 hours
+        c.TerminalManager.cull_inactive_timeout = 7200
+        c.TerminalManager.cull_interval = 600
+        
+        # Log culling events for monitoring
+        import logging
+        logging.getLogger('ServerApp').setLevel(logging.INFO)
+
+  image:
+    name: ghcr.io/neurodesk/neurodesktop/neurodesktop
+    tag: "2024-12-05"
+    pullPolicy: IfNotPresent
+
+  storage:
+    type: dynamic
+    dynamic:
+      storageClass: longhorn
+      pvcNameTemplate: "jupyter-{username}"
+      volumeNameTemplate: "jupyter-{username}"
+      storageAccessModes: [ReadWriteOnce]
+    capacity: 10Gi
+    homeMountPath: /home/jovyan
+
+  cpu: { guarantee: 0.5, limit: 4 }
+  memory: { guarantee: 1G, limit: 8G }
+  
+  extraEnv:
+    JUPYTER_ENABLE_LAB: "yes"
+
+ingress:
+  enabled: true
+  ingressClassName: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+  hosts:
+    - xnat-test.ssdsorg.cloud.edu.au
+  pathType: Prefix
+  tls: []
+
+scheduling:
+  userScheduler: { enabled: false }
+  podPriority: { enabled: false }
+  userPlaceholder: { enabled: false }
+
+prePuller:
+  hook: { enabled: false }
+  continuous: { enabled: false }
+
+debug:
+  enabled: false
