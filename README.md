@@ -45,6 +45,7 @@ Complete integration of JupyterHub with XNAT on Kubernetes.
 │  - AAF Auth   │  API     │  - AAF OAuth     │
 │  - Projects   │  calls   │  - Spawner       │
 │  - Plugin     │          │  - Hub           │
+│               │          │  - User mapping  │
 └───────┬───────┘          └────────┬─────────┘
         │                           │
         │                    ┌──────┴──────┐
