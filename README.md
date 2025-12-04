@@ -496,6 +496,6 @@ Use this checklist to track your installation:
 
 ---
 
-**Version:** 1.0.0  
-**Last Updated:** 03-12-2025  
+**Version:** 1.1.0  
+**Last Updated:** 04-12-2025  
 
