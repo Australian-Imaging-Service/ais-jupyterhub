@@ -6,14 +6,13 @@ automountStorageClass:
 
 nodeplugin:
   extraVolumes:
-    # Default volumes - MUST include these
     - name: etc-cvmfs-default-conf
       configMap:
         name: cvmfs-csi-default-local
     - name: etc-cvmfs-config-d
       configMap:
         name: cvmfs-csi-config-d
-    # MicroK8s fix - NEW volume
+    # MicroK8s fix
     - name: kubelet-microk8s
       hostPath:
         path: /var/snap/microk8s/common/var/lib/kubelet
