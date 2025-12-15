@@ -7,8 +7,9 @@ echo "Setting up CVMFS Mounts"
 echo "=========================================="
 
 # Create namespace for mounts
-echo "[1/6] Creating mounts namespace..."
+echo "[1/6] Creating mounts and jupyter namespace..."
 microk8s kubectl create namespace mounts --dry-run=client -o yaml | microk8s kubectl apply -f -
+microk8s kubectl create namespace jupyter 2>/dev/null || echo "Namespace already exists"
 
 # Add CVMFS CSI Helm repository
 echo "[2/6] Adding CVMFS CSI Helm repository..."

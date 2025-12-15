@@ -30,6 +30,32 @@ echo "[4/4] Waiting for Longhorn to be ready..."
 microk8s kubectl wait --for=condition=ready pod -l app=longhorn-manager -n longhorn-system --timeout=300s
 microk8s kubectl wait --for=condition=ready pod -l app=longhorn-driver-deployer -n longhorn-system --timeout=300s
 
+# Apply BackupTarget configuration
+echo "Configuring Longhorn backup target..."
+microk8s kubectl apply -f - <<EOF
+apiVersion: longhorn.io/v1beta2
+kind: BackupTarget
+metadata:
+  name: default
+  namespace: longhorn-system
+spec:
+  backupTargetURL: ""
+  credentialSecret: ""
+  pollInterval: "300s"
+EOF
+
+# Wait for BackupTarget to be created
+echo "Waiting for BackupTarget to be ready..."
+microk8s kubectl wait --for=jsonpath='{.status.available}'=true \
+  backuptarget/default -n longhorn-system --timeout=60s 2>/dev/null || echo "BackupTarget created"
+
+# Restart Longhorn Manager to pick up the configuration
+echo "Restarting Longhorn manager..."
+microk8s kubectl rollout restart daemonset longhorn-manager -n longhorn-system
+
+# Wait for rollout to complete
+microk8s kubectl rollout status daemonset longhorn-manager -n longhorn-system --timeout=300s
+
 echo ""
 echo "=========================================="
 echo "Longhorn Installation Complete"
