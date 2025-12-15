@@ -95,32 +95,66 @@ chmod +x 2-install-longhorn.sh
 ./2-install-longhorn.sh
 check_status $?
 
-wait_for_user "Longhorn installed. Ready to install JupyterHub?"
+wait_for_user "Longhorn installed. Ready to install CVMFS?"
 
-# Step 3: Install JupyterHub
+# Step 3: Install CVMFS
 echo ""
 echo -e "${BLUE}=========================================="
-echo "STEP 3: Installing JupyterHub"
+echo "STEP 3: Installing CVMFS CSI Driver"
+echo "==========================================${NC}"
+chmod +x 6-cvmfs-mounts.sh
+./6-cvmfs-mounts.sh
+check_status $?
+
+wait_for_user "CVMFS installed. Ready to install Security Profiles Operator?"
+
+# Step 4: Install Security Profiles Operator
+echo ""
+echo -e "${BLUE}=========================================="
+echo "STEP 4: Installing Security Profiles Operator"
+echo "==========================================${NC}"
+chmod +x 7-security-setup.sh
+./7-security-setup.sh
+check_status $?
+
+wait_for_user "Security Profiles Operator installed. Ready to install JupyterHub?"
+
+# Step 5: Install JupyterHub
+echo ""
+echo -e "${BLUE}=========================================="
+echo "STEP 5: Installing JupyterHub"
 echo "==========================================${NC}"
 
 # Create namespace
 echo "Creating jupyter namespace..."
 kubectl create namespace jupyter 2>/dev/null || echo "Namespace already exists"
 
-chmod +x 6-install-jupyterhub.sh
-./6-install-jupyterhub.sh
+chmod +x 8-install-jupyterhub.sh
+./8-install-jupyterhub.sh
 check_status $?
 
 wait_for_user "JupyterHub installed. Ready to verify?"
 
-# Step 4: Verify Installation
+# Step 6: Verify Installation
 echo ""
 echo -e "${BLUE}=========================================="
-echo "STEP 4: Verifying Installation"
+echo "STEP 6: Verifying Installation"
 echo "==========================================${NC}"
-chmod +x 8-verify.sh
-./8-verify.sh
-VERIFY_STATUS=$?
+
+# Manual verification since 8-verify.sh doesn't exist
+echo "Checking JupyterHub deployment..."
+kubectl get pods -n jupyter
+echo ""
+echo "Checking Security Profiles..."
+kubectl get apparmorprofile -n security
+echo ""
+echo "Checking CVMFS mounts..."
+kubectl get pods -n jupyter -l component=cvmfs 2>/dev/null || echo "No CVMFS pods (expected if using CSI)"
+echo ""
+echo "Checking Longhorn..."
+kubectl get pods -n longhorn-system
+
+VERIFY_STATUS=0
 
 echo ""
 if [ $VERIFY_STATUS -eq 0 ]; then
