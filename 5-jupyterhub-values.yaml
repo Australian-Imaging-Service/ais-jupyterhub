@@ -20,7 +20,8 @@ hub:
       token_url: "https://central.test.aaf.edu.au/providers/op/token"
       userdata_url: "https://central.test.aaf.edu.au/providers/op/userinfo"
       login_service: "AAF"
-      username_claim: "sub"
+      # username_claim: "sub"  # OLD: Use sub claim as username
+      username_claim: "edu_person_principal_name"  # NEW: Use eduPersonPrincipalName as username
       scope: [openid, profile, email, eduperson_principal_name, eduperson_scoped_affiliation, eduperson_affiliation, eduperson_assurance, schac_home_organization, aueduperson]
       allow_all: true
     
@@ -109,15 +110,32 @@ hub:
       from jupyterhub import orm
       import json
 
+      # OLD normalize_username for sub claim
+      # def normalize_username(username):
+      #     if not username:
+      #         return username, username
+      #     original = username
+      #     if username.startswith('aaf_'):
+      #         username = username[4:]
+      #     normalized = f'aaf_{username.lower()}'
+      #     return normalized, original
+
+      # NEW normalize_username for eduPersonPrincipalName (email format)
       def normalize_username(username):
           if not username:
               return username, username
 
           original = username
 
+          # Handle email format from eduPersonPrincipalName (e.g., "uqabeniw@uq.edu.au")
+          if '@' in username:
+              username = username.split('@')[0]  # Extract username before @
+
+          # Remove aaf_ prefix if already present
           if username.startswith('aaf_'):
               username = username[4:]
 
+          # Add aaf_ prefix for JupyterHub username
           normalized = f'aaf_{username.lower()}'
 
           return normalized, original
@@ -130,25 +148,55 @@ hub:
 
       original_authenticate = GenericOAuthenticator.authenticate
 
+      # OLD authenticate_with_storage for sub claim
+      # async def authenticate_with_storage(self, handler, data=None, **kwargs):
+      #     result = await original_authenticate(self, handler, data, **kwargs)
+      #     if result and isinstance(result, dict):
+      #         username = result.get('name')
+      #         if username:
+      #             auth_state = result.get('auth_state', {})
+      #             user_info = auth_state.get('oauth_user', {})
+      #             if user_info:
+      #                 original_username = user_info.get('sub', username)
+      #                 eduperson_principal = user_info.get('edu_person_principal_name', '')
+      #                 user = self.db.query(orm.User).filter_by(name=username).first()
+      #                 if user:
+      #                     if not user.xnat_username:
+      #                         user.xnat_username = original_username
+      #                     if not user.eduperson_principal_name and eduperson_principal:
+      #                         user.eduperson_principal_name = eduperson_principal
+      #                     self.db.commit()
+      #             else:
+      #                 self.log.warning(f"AAF did not return user info for {username}")
+      #     return result
+
+      # NEW authenticate_with_storage for eduPersonPrincipalName
       async def authenticate_with_storage(self, handler, data=None, **kwargs):
           result = await original_authenticate(self, handler, data, **kwargs)
 
           if result and isinstance(result, dict):
-              username = result.get('name')
+              username = result.get('name')  # This is now the normalized eduPersonPrincipalName (e.g., "aaf_uqabeniw")
               if username:
                   auth_state = result.get('auth_state', {})
                   user_info = auth_state.get('oauth_user', {})
 
                   if user_info:
-                      original_username = user_info.get('sub', username)
+                      # Get sub claim (XNAT username) and eduPersonPrincipalName (raw email)
+                      sub_claim = user_info.get('sub', '')
                       eduperson_principal = user_info.get('edu_person_principal_name', '')
 
                       user = self.db.query(orm.User).filter_by(name=username).first()
                       if user:
-                          if not user.xnat_username:
-                              user.xnat_username = original_username
+                          # Store normalized sub claim as xnat_username (without aaf_ prefix)
+                          if not user.xnat_username and sub_claim:
+                              # Normalize sub claim and remove aaf_ prefix for XNAT storage
+                              xnat_user = sub_claim[4:] if sub_claim.startswith('aaf_') else sub_claim
+                              user.xnat_username = xnat_user.lower()
+
+                          # Store raw eduPersonPrincipalName email
                           if not user.eduperson_principal_name and eduperson_principal:
                               user.eduperson_principal_name = eduperson_principal
+
                           self.db.commit()
                   else:
                       self.log.warning(f"AAF did not return user info for {username}")
@@ -157,56 +205,114 @@ hub:
 
       GenericOAuthenticator.authenticate = authenticate_with_storage
       
+      # OLD API handler wrappers for sub claim
+      # original_user_get = UserAPIHandler.get
+      # original_user_post = UserAPIHandler.post
+      # original_user_delete = UserAPIHandler.delete
+      # original_user_patch = UserAPIHandler.patch
+      # async def user_get_wrapper(self, user_name):
+      #     normalized, original = normalize_username(user_name)
+      #     return await original_user_get(self, normalized)
+      # async def user_post_wrapper(self, user_name):
+      #     normalized, original = normalize_username(user_name)
+      #     result = await original_user_post(self, normalized)
+      #     user = self.find_user(normalized)
+      #     if user and not user.xnat_username:
+      #         user.xnat_username = original
+      #         self.db.commit()
+      #     return result
+      # async def user_delete_wrapper(self, user_name):
+      #     normalized, original = normalize_username(user_name)
+      #     return await original_user_delete(self, normalized)
+      # async def user_patch_wrapper(self, user_name):
+      #     normalized, original = normalize_username(user_name)
+      #     return await original_user_patch(self, normalized)
+      # UserAPIHandler.get = user_get_wrapper
+      # UserAPIHandler.post = user_post_wrapper
+      # UserAPIHandler.delete = user_delete_wrapper
+      # UserAPIHandler.patch = user_patch_wrapper
+      # original_server_post = UserServerAPIHandler.post
+      # original_server_delete = UserServerAPIHandler.delete
+      # async def server_post_wrapper(self, user_name, server_name=''):
+      #     normalized, original = normalize_username(user_name)
+      #     user = self.find_user(normalized)
+      #     if user and not user.xnat_username:
+      #         user.xnat_username = original
+      #         self.db.commit()
+      #     return await original_server_post(self, normalized, server_name)
+      # async def server_delete_wrapper(self, user_name, server_name=''):
+      #     normalized, original = normalize_username(user_name)
+      #     return await original_server_delete(self, normalized, server_name)
+      # UserServerAPIHandler.post = server_post_wrapper
+      # UserServerAPIHandler.delete = server_delete_wrapper
+
+      # NEW API handler wrappers for eduPersonPrincipalName
+      # These wrappers map XNAT usernames (sub claim) to JupyterHub usernames (eduPersonPrincipalName)
+
+      def map_xnat_to_jupyterhub_username(handler, user_name):
+          """
+          Map XNAT username (sub claim format) to JupyterHub username (eduPersonPrincipalName format).
+
+          If user_name is already a JupyterHub username, return it as-is.
+          Otherwise, look up the user by xnat_username and return their JupyterHub username.
+          """
+          # First try to find user by JupyterHub username (direct match)
+          user = handler.db.query(orm.User).filter_by(name=user_name).first()
+          if user:
+              return user.name
+
+          # If not found, try to find by xnat_username
+          # Normalize the incoming username (remove aaf_ prefix if present)
+          xnat_lookup = user_name[4:].lower() if user_name.startswith('aaf_') else user_name.lower()
+
+          # Search for user with matching xnat_username
+          user = handler.db.query(orm.User).filter_by(xnat_username=xnat_lookup).first()
+          if user:
+              return user.name
+
+          # If still not found, normalize as eduPersonPrincipalName and return
+          # This handles the case where XNAT sends an email format
+          normalized, _ = normalize_username(user_name)
+          return normalized
+
       original_user_get = UserAPIHandler.get
       original_user_post = UserAPIHandler.post
       original_user_delete = UserAPIHandler.delete
       original_user_patch = UserAPIHandler.patch
-      
+
       async def user_get_wrapper(self, user_name):
-          normalized, original = normalize_username(user_name)
-          return await original_user_get(self, normalized)
-      
+          jupyterhub_username = map_xnat_to_jupyterhub_username(self, user_name)
+          return await original_user_get(self, jupyterhub_username)
+
       async def user_post_wrapper(self, user_name):
-          normalized, original = normalize_username(user_name)
-          result = await original_user_post(self, normalized)
-          
-          user = self.find_user(normalized)
-          if user and not user.xnat_username:
-              user.xnat_username = original
-              self.db.commit()
-          
+          jupyterhub_username = map_xnat_to_jupyterhub_username(self, user_name)
+          result = await original_user_post(self, jupyterhub_username)
           return result
-      
+
       async def user_delete_wrapper(self, user_name):
-          normalized, original = normalize_username(user_name)
-          return await original_user_delete(self, normalized)
-      
+          jupyterhub_username = map_xnat_to_jupyterhub_username(self, user_name)
+          return await original_user_delete(self, jupyterhub_username)
+
       async def user_patch_wrapper(self, user_name):
-          normalized, original = normalize_username(user_name)
-          return await original_user_patch(self, normalized)
-      
+          jupyterhub_username = map_xnat_to_jupyterhub_username(self, user_name)
+          return await original_user_patch(self, jupyterhub_username)
+
       UserAPIHandler.get = user_get_wrapper
       UserAPIHandler.post = user_post_wrapper
       UserAPIHandler.delete = user_delete_wrapper
       UserAPIHandler.patch = user_patch_wrapper
-      
+
       original_server_post = UserServerAPIHandler.post
       original_server_delete = UserServerAPIHandler.delete
-      
+
       async def server_post_wrapper(self, user_name, server_name=''):
-          normalized, original = normalize_username(user_name)
-          
-          user = self.find_user(normalized)
-          if user and not user.xnat_username:
-              user.xnat_username = original
-              self.db.commit()
-          
-          return await original_server_post(self, normalized, server_name)
-      
+          jupyterhub_username = map_xnat_to_jupyterhub_username(self, user_name)
+          return await original_server_post(self, jupyterhub_username, server_name)
+
       async def server_delete_wrapper(self, user_name, server_name=''):
-          normalized, original = normalize_username(user_name)
-          return await original_server_delete(self, normalized, server_name)
-      
+          jupyterhub_username = map_xnat_to_jupyterhub_username(self, user_name)
+          return await original_server_delete(self, jupyterhub_username, server_name)
+
       UserServerAPIHandler.post = server_post_wrapper
       UserServerAPIHandler.delete = server_delete_wrapper
 
