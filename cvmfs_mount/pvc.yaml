@@ -8,5 +8,5 @@ spec:
     - ReadOnlyMany
   resources:
     requests:
-      storage: 1  # Dummy value - actual storage from CVMFS
+      storage: 1Gi  # Dummy value - actual storage from CVMFS
   storageClassName: cvmfs

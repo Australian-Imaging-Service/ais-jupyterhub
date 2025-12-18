@@ -8,15 +8,15 @@ echo "=========================================="
 
 # 1. Delete JupyterHub Helm release
 echo "[1/9] Uninstalling JupyterHub Helm release..."
-microk8s helm uninstall jupyterhub -n jupyter 2>/dev/null || echo "JupyterHub not found or already removed"
+helm uninstall jupyterhub -n jupyter 2>/dev/null || echo "JupyterHub not found or already removed"
 
 # 2. Delete all jupyter namespace resources
 echo "[2/9] Deleting all resources in jupyter namespace..."
-microk8s kubectl delete all --all -n jupyter --force --grace-period=0 2>/dev/null || true
-microk8s kubectl delete pvc --all -n jupyter --force --grace-period=0 2>/dev/null || true
-microk8s kubectl delete configmap --all -n jupyter 2>/dev/null || true
-microk8s kubectl delete secret --all -n jupyter 2>/dev/null || true
-microk8s kubectl delete daemonset --all -n jupyter --force --grace-period=0 2>/dev/null || true
+kubectl delete all --all -n jupyter --force --grace-period=0 2>/dev/null || true
+kubectl delete pvc --all -n jupyter --force --grace-period=0 2>/dev/null || true
+kubectl delete configmap --all -n jupyter 2>/dev/null || true
+kubectl delete secret --all -n jupyter 2>/dev/null || true
+kubectl delete daemonset --all -n jupyter --force --grace-period=0 2>/dev/null || true
 
 # Wait for pods to terminate
 echo "Waiting for jupyter pods to terminate..."
@@ -24,107 +24,107 @@ sleep 10
 
 # 3. Delete jupyter namespace
 echo "[3/9] Deleting jupyter namespace..."
-microk8s kubectl delete namespace jupyter 2>/dev/null || echo "Namespace already deleted"
+kubectl delete namespace jupyter 2>/dev/null || echo "Namespace already deleted"
 
 # 4. Remove Security Profiles Operator
 echo "[4/9] Uninstalling Security Profiles Operator..."
-microk8s helm uninstall security-profiles-operator -n security 2>/dev/null || echo "SPO not found or already removed"
+helm uninstall security-profiles-operator -n security 2>/dev/null || echo "SPO not found or already removed"
 
 # Delete security namespace resources
 echo "Cleaning up security namespace resources..."
-microk8s kubectl delete all --all -n security --force --grace-period=0 2>/dev/null || true
+kubectl delete all --all -n security --force --grace-period=0 2>/dev/null || true
 
 # Wait a bit
 sleep 5
 
 # 5. Delete security namespace
 echo "[5/9] Deleting security namespace..."
-microk8s kubectl delete namespace security 2>/dev/null || echo "Security namespace already deleted"
+kubectl delete namespace security 2>/dev/null || echo "Security namespace already deleted"
 
 # Clean up cluster-scoped SPO resources
 echo "Cleaning up cluster-scoped security resources..."
 
 # Delete all SPO CRDs (this will cascade delete all CR instances)
-microk8s kubectl get crd 2>/dev/null | grep 'security-profiles-operator.x-k8s.io' | awk '{print $1}' | xargs -r microk8s kubectl delete crd 2>/dev/null || true
+kubectl get crd 2>/dev/null | grep 'security-profiles-operator.x-k8s.io' | awk '{print $1}' | xargs -r kubectl delete crd 2>/dev/null || true
 
 # Delete ClusterRoles and ClusterRoleBindings
-microk8s kubectl get clusterrole 2>/dev/null | grep -E "(spo-|security-profiles)" | awk '{print $1}' | xargs -r microk8s kubectl delete clusterrole 2>/dev/null || true
-microk8s kubectl get clusterrolebinding 2>/dev/null | grep -E "(spo-|security-profiles)" | awk '{print $1}' | xargs -r microk8s kubectl delete clusterrolebinding 2>/dev/null || true
+kubectl get clusterrole 2>/dev/null | grep -E "(spo-|security-profiles)" | awk '{print $1}' | xargs -r kubectl delete clusterrole 2>/dev/null || true
+kubectl get clusterrolebinding 2>/dev/null | grep -E "(spo-|security-profiles)" | awk '{print $1}' | xargs -r kubectl delete clusterrolebinding 2>/dev/null || true
 
 # Delete webhooks
-microk8s kubectl delete mutatingwebhookconfiguration spo-mutating-webhook-configuration 2>/dev/null || true
-microk8s kubectl delete validatingwebhookconfiguration spo-validating-webhook-configuration 2>/dev/null || true
+kubectl delete mutatingwebhookconfiguration spo-mutating-webhook-configuration 2>/dev/null || true
+kubectl delete validatingwebhookconfiguration spo-validating-webhook-configuration 2>/dev/null || true
 
 # Delete any ServiceMonitors
-microk8s kubectl delete servicemonitor -n security --all 2>/dev/null || true
+kubectl delete servicemonitor -n security --all 2>/dev/null || true
 
 # 6. Remove Longhorn
 echo "[6/9] Uninstalling Longhorn..."
-microk8s helm uninstall longhorn -n longhorn-system 2>/dev/null || echo "Longhorn not found or already removed"
+helm uninstall longhorn -n longhorn-system 2>/dev/null || echo "Longhorn not found or already removed"
 
 # Wait for Longhorn to clean up
 echo "Waiting for Longhorn resources to clean up..."
 sleep 15
 
 # Force delete Longhorn resources if stuck
-microk8s kubectl delete namespace longhorn-system --force --grace-period=0 2>/dev/null || true
+kubectl delete namespace longhorn-system --force --grace-period=0 2>/dev/null || true
 
 # 7. Clean up any orphaned PVs
 echo "[7/9] Cleaning up orphaned PersistentVolumes..."
 
 # First, clear claimRef from any Released PVs to prevent binding issues
 echo "  Clearing claimRef from Released PVs..."
-for pv in $(microk8s kubectl get pv -o json | jq -r '.items[] | select(.status.phase == "Released") | .metadata.name' 2>/dev/null || true); do
+for pv in $(kubectl get pv -o json | jq -r '.items[] | select(.status.phase == "Released") | .metadata.name' 2>/dev/null || true); do
   echo "    Resetting PV: $pv"
-  microk8s kubectl patch pv "$pv" -p '{"spec":{"claimRef": null}}' 2>/dev/null || true
+  kubectl patch pv "$pv" -p '{"spec":{"claimRef": null}}' 2>/dev/null || true
 done
 
 # Also specifically handle jupyter-xnat-gpfs-shared if it exists
-if microk8s kubectl get pv jupyter-xnat-gpfs-shared &>/dev/null; then
+if kubectl get pv jupyter-xnat-gpfs-shared &>/dev/null; then
   echo "  Clearing claimRef from jupyter-xnat-gpfs-shared..."
-  microk8s kubectl patch pv jupyter-xnat-gpfs-shared -p '{"spec":{"claimRef": null}}' 2>/dev/null || true
+  kubectl patch pv jupyter-xnat-gpfs-shared -p '{"spec":{"claimRef": null}}' 2>/dev/null || true
 fi
 
 # Then delete orphaned PVs
-microk8s kubectl get pv | grep -E "jupyter|longhorn" | awk '{print $1}' | xargs -r microk8s kubectl delete pv 2>/dev/null || true
+kubectl get pv | grep -E "jupyter|longhorn" | awk '{print $1}' | xargs -r kubectl delete pv 2>/dev/null || true
 
 # 8. Complete CVMFS cleanup
 echo "[8/9] Uninstalling CVMFS completely..."
 
 # Delete CVMFS PVC first (prevents volume leak)
 echo "  Deleting CVMFS PVC..."
-microk8s kubectl delete pvc cvmfs -n jupyter --ignore-not-found=true 2>/dev/null || true
+kubectl delete pvc cvmfs -n jupyter --ignore-not-found=true 2>/dev/null || true
 
 # Wait for PVC deletion
 sleep 5
 
 # Delete CVMFS PVs
 echo "  Cleaning up CVMFS PVs..."
-microk8s kubectl get pv 2>/dev/null | grep cvmfs | awk '{print $1}' | xargs -r microk8s kubectl delete pv --ignore-not-found=true 2>/dev/null || true
+kubectl get pv 2>/dev/null | grep cvmfs | awk '{print $1}' | xargs -r kubectl delete pv --ignore-not-found=true 2>/dev/null || true
 
 # Uninstall CVMFS CSI driver from both possible namespaces
 echo "  Uninstalling CVMFS CSI driver..."
-microk8s helm uninstall cvmfs-csi -n mounts 2>/dev/null || true
+helm uninstall cvmfs-csi -n mounts 2>/dev/null || true
 
 # Uninstall smarter-device-manager
 echo "  Uninstalling smarter-device-manager..."
-microk8s helm uninstall smarter-device-manager -n mounts 2>/dev/null || true
+helm uninstall smarter-device-manager -n mounts 2>/dev/null || true
 
 # Remove node labels
 echo "  Removing node labels..."
-microk8s kubectl get nodes -o name 2>/dev/null | while read node; do
-  microk8s kubectl label $node smarter-device-manager- --overwrite 2>/dev/null || true
+kubectl get nodes -o name 2>/dev/null | while read node; do
+  kubectl label $node smarter-device-manager- --overwrite 2>/dev/null || true
 done
 
 # Delete CVMFS StorageClass
 echo "  Deleting CVMFS StorageClass..."
-microk8s kubectl delete storageclass cvmfs --ignore-not-found=true 2>/dev/null || true
+kubectl delete storageclass cvmfs --ignore-not-found=true 2>/dev/null || true
 
 # Delete CVMFS namespace
-microk8s kubectl delete namespace mounts 2>/dev/null || true
+kubectl delete namespace mounts 2>/dev/null || true
 
 # Clean up CVMFS DaemonSet if exists
-microk8s kubectl delete daemonset cvmfs-nodeplugin -n kube-system 2>/dev/null || true
+kubectl delete daemonset cvmfs-nodeplugin -n kube-system 2>/dev/null || true
 
 # 9. Clean up CVMFS on nodes
 echo "[9/9] Cleaning up CVMFS mounts ..."
@@ -155,12 +155,12 @@ echo "CLEANUP COMPLETE"
 echo "=========================================="
 echo ""
 echo "Verify cleanup:"
-echo "  microk8s kubectl get all -n jupyter"
-echo "  microk8s kubectl get all -n security"
-echo "  microk8s kubectl get all -n mounts"
-echo "  microk8s kubectl get pvc -n jupyter"
-echo "  microk8s kubectl get ns | grep -E 'jupyter|security|mounts|longhorn'"
-echo "  microk8s helm list -A"
+echo "  kubectl get all -n jupyter"
+echo "  kubectl get all -n security"
+echo "  kubectl get all -n mounts"
+echo "  kubectl get pvc -n jupyter"
+echo "  kubectl get ns | grep -E 'jupyter|security|mounts|longhorn'"
+echo "  helm list -A"
 echo "  mount | grep cvmfs"
 echo "  sudo aa-status | grep notebook"
 echo ""
@@ -177,7 +177,7 @@ echo ""
 # echo "=========================================="
 
 
-# # Set to your microk8s kubectl if not using MicroK8s:
+# # Set to your kubectl if not using MicroK8s:
 # KCTL="${KCTL:-microk8s kubectl}"
 
 
@@ -186,7 +186,7 @@ echo ""
 # }
 
 # echo ">>> Using KCTL='$KCTL'"
-# $KCTL version >/dev/null 2>&1 || { echo "ERR: '$KCTL' not found/working. Set KCTL to your microk8s kubectl and retry."; exit 1; }
+# $KCTL version >/dev/null 2>&1 || { echo "ERR: '$KCTL' not found/working. Set KCTL to your kubectl and retry."; exit 1; }
 
 # echo ">>> [0] Unstick namespace (remove finalizers if present)"
 # k get ns longhorn-system >/dev/null && \

@@ -1,44 +1,49 @@
 
 # CVMFS CSI Driver Configuration
-kubeletDirectory: /var/snap/microk8s/common/var/lib/kubelet
+
+# uncomment and set kubeletDirectory for MicroK8s
+# kubeletDirectory: /var/snap/microk8s/common/var/lib/kubelet
+
 automountStorageClass:
   create: true
 
-nodeplugin:
-  extraVolumes:
-    - name: etc-cvmfs-default-conf
-      configMap:
-        name: cvmfs-csi-default-local
-    - name: etc-cvmfs-config-d
-      configMap:
-        name: cvmfs-csi-config-d
-    # MicroK8s fix
-    - name: kubelet-microk8s
-      hostPath:
-        path: /var/snap/microk8s/common/var/lib/kubelet
-        type: Directory
+# uncomment the following section to enable MicroK8s support
+
+# nodeplugin:
+#   extraVolumes:
+#     - name: etc-cvmfs-default-conf
+#       configMap:
+#         name: cvmfs-csi-default-local
+#     - name: etc-cvmfs-config-d
+#       configMap:
+#         name: cvmfs-csi-config-d
+#     # MicroK8s fix
+#     - name: kubelet-microk8s
+#       hostPath:
+#         path: /var/snap/microk8s/common/var/lib/kubelet
+#         type: Directory
   
-  # Add to nodeplugin container
-  plugin:
-    extraVolumeMounts:
-      - name: kubelet-microk8s
-        mountPath: /var/snap/microk8s/common/var/lib/kubelet
-        mountPropagation: Bidirectional
+#   # Add to nodeplugin container
+#   plugin:
+#     extraVolumeMounts:
+#       - name: kubelet-microk8s
+#         mountPath: /var/snap/microk8s/common/var/lib/kubelet
+#         mountPropagation: Bidirectional
   
-  # Add to singlemount container
-  singlemount:
-    extraVolumeMounts:
-      - name: kubelet-microk8s
-        mountPath: /var/snap/microk8s/common/var/lib/kubelet
-        mountPropagation: Bidirectional
+#   # Add to singlemount container
+#   singlemount:
+#     extraVolumeMounts:
+#       - name: kubelet-microk8s
+#         mountPath: /var/snap/microk8s/common/var/lib/kubelet
+#         mountPropagation: Bidirectional
   
-  automount:
-    extraVolumeMounts:
-      - name: etc-cvmfs-default-conf
-        mountPath: /etc/cvmfs/default.local
-        subPath: default.local
-      - name: etc-cvmfs-config-d
-        mountPath: /etc/cvmfs/config.d
+#   automount:
+#     extraVolumeMounts:
+#       - name: etc-cvmfs-default-conf
+#         mountPath: /etc/cvmfs/default.local
+#         subPath: default.local
+#       - name: etc-cvmfs-config-d
+#         mountPath: /etc/cvmfs/config.d
 
 cache:
   local:

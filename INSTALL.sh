@@ -87,15 +87,16 @@ check_status $?
 wait_for_user "Cleanup complete. Ready to install Longhorn?"
 
 # Step 2: Install Longhorn
-echo ""
-echo -e "${BLUE}=========================================="
-echo "STEP 2: Installing Longhorn"
-echo "==========================================${NC}"
-chmod +x 2-install-longhorn.sh
-./2-install-longhorn.sh
-check_status $?
+# !!!Uncommnent to install Longhorn
+# echo ""
+# echo -e "${BLUE}=========================================="
+# echo "STEP 2: Installing Longhorn"
+# echo "==========================================${NC}"
+# chmod +x 2-install-longhorn.sh
+# ./2-install-longhorn.sh
+# check_status $?
 
-wait_for_user "Longhorn installed. Ready to install CVMFS?"
+# wait_for_user "Longhorn installed. Ready to install CVMFS?"
 
 # Step 3: Install CVMFS
 echo ""
@@ -191,7 +192,7 @@ else
     echo "Please check the verification output above."
     echo ""
     echo "Troubleshooting:"
-    echo "  ./8-verify.sh - Run verification again"
+    echo "  kubectl get pods -n mounts - Check CVMFS pods"
     echo "  kubectl get pods -n jupyter - Check pod status"
     echo "  kubectl logs -n jupyter -l component=hub - Check hub logs"
     echo ""

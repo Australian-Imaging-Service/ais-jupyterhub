@@ -138,7 +138,7 @@ Complete integration of JupyterHub with XNAT on Kubernetes.
 ## 📦 Prerequisites
 
 ### Required
-- ✅ Kubernetes cluster (microk8s 1.24+)
+- ✅ Kubernetes cluster 
 - ✅ kubectl configured
 - ✅ Helm 3.x installed
 - ✅ XNAT deployed with AAF authentication
