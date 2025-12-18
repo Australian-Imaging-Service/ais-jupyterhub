@@ -36,7 +36,198 @@ sudo chown -R root:root /var/snap/microk8s/common/var/lib/longhorn
 kubectl patch storageclass longhorn -p '{"metadata": {"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
 ```
 
-### 3. NFS Mount Issues
+#### Problem: BackupTarget not created automatically
+```bash
+# Check if BackupTarget exists
+kubectl get backuptarget -n longhorn-system
+
+# If missing, apply it manually
+kubectl apply -f - <<EOF
+apiVersion: longhorn.io/v1beta2
+kind: BackupTarget
+metadata:
+  name: default
+  namespace: longhorn-system
+spec:
+  backupTargetURL: ""
+  credentialSecret: ""
+  pollInterval: "300s"
+EOF
+
+# Restart longhorn-manager to pick up the configuration
+kubectl rollout restart daemonset longhorn-manager -n longhorn-system
+kubectl rollout status daemonset longhorn-manager -n longhorn-system --timeout=300s
+```
+
+### 3. CVMFS Installation Issues
+
+#### Problem: smarter-device-manager pods not starting
+```bash
+# Check DaemonSet status
+kubectl get daemonset -n mounts smarter-device-manager
+
+# Check pod logs
+kubectl logs -n mounts -l app=smarter-device-manager
+
+# Verify node labels
+kubectl get nodes --show-labels | grep smarter-device-manager
+
+# Re-label nodes if needed
+kubectl label nodes --all smarter-device-manager=enabled --overwrite
+```
+
+#### Problem: CVMFS CSI driver installation fails
+```bash
+# Check if CVMFS CSI driver is installed
+helm list -n mounts | grep cvmfs-csi
+
+# Check CSI driver pods
+kubectl get pods -n mounts
+
+# Reinstall if needed
+helm uninstall cvmfs-csi -n mounts
+helm uninstall smarter-device-manager -n mounts
+./6-cvmfs-mounts.sh
+```
+
+#### Problem: CVMFS PVC stuck in Pending
+```bash
+# Check PVC status
+kubectl describe pvc cvmfs -n jupyter
+
+# Check if CVMFS CSI driver is running
+kubectl get pods -n mounts
+
+# Verify CVMFS StorageClass exists (defined in cvmfs_mount/pvc.yaml)
+kubectl get pvc cvmfs -n jupyter -o yaml | grep storageClassName
+
+# Check CSI driver logs
+kubectl logs -n mounts -l app=cvmfs-csi-nodeplugin
+```
+
+#### Problem: User pods can't access CVMFS mounts
+```bash
+# Check if FUSE device is available in user pod
+kubectl exec -n jupyter jupyter-<username> -- ls -la /dev/fuse
+
+# Verify smarter-device-manager resource in pod spec
+kubectl describe pod -n jupyter jupyter-<username> | grep "smarter-devices/fuse"
+
+# Should show:
+#   Requests:
+#     smarter-devices/fuse: 1
+#   Limits:
+#     smarter-devices/fuse: 1
+
+# Check CVMFS mount in user pod
+kubectl exec -n jupyter jupyter-<username> -- df -h | grep cvmfs
+kubectl exec -n jupyter jupyter-<username> -- ls -la /cvmfs
+```
+
+#### Problem: CVMFS repository not accessible
+```bash
+# Check CVMFS configuration
+kubectl get pvc cvmfs -n jupyter -o yaml
+
+# Verify CSI driver is using correct kubelet path for MicroK8s
+helm get values cvmfs-csi -n mounts | grep kubeletDirectory
+# Should show: kubeletDirectory: /var/snap/microk8s/common/var/lib/kubelet
+
+# Check CVMFS cache on nodes
+sudo ls -la /var/lib/cvmfs/
+```
+
+### 4. Security Profiles Operator Issues
+
+#### Problem: spod pod in CrashLoopBackOff
+```bash
+# Check spod pod logs
+kubectl logs -n security -l app=spod
+
+# Common issue: MicroK8s kubelet path
+# Verify patch was applied
+kubectl get daemonset spod -n security -o yaml | grep KUBELET_ROOT
+
+# Should show: /var/snap/microk8s/common/var/lib/kubelet
+# If not, re-run security setup:
+./7-security-setup.sh
+```
+
+#### Problem: AppArmor profile not loading
+```bash
+# Check AppArmor profile status
+kubectl get apparmorprofile -n security notebook -o yaml
+
+# Should show:
+#   status: Installed
+#   conditions:
+#   - type: Ready
+#     status: "True"
+
+# If not ready, check spod logs
+kubectl logs -n security -l app=spod | grep -i apparmor
+
+# Verify AppArmor controller is enabled
+kubectl logs -n security -l app=spod | grep "Starting AppArmor controller"
+
+# If controller not starting, check Helm values
+helm get values security-profiles-operator -n security | grep enableAppArmor
+# Should show: enableAppArmor: true
+```
+
+#### Problem: AppArmor profile not enforced in user pods
+```bash
+# Check if profile is applied to user pod
+kubectl get pod -n jupyter jupyter-<username> -o yaml | grep appArmor
+
+# Should show:
+#   appArmorProfile:
+#     localhostProfile: notebook
+#     type: Localhost
+
+# Verify inside user pod
+kubectl exec -n jupyter jupyter-<username> -- cat /proc/self/attr/current
+# Should show: notebook (enforce)
+
+# If not enforced, check JupyterHub values file (5-jupyterhub-values.yaml)
+# Ensure extra_container_config has appArmorProfile set
+```
+
+#### Problem: Security Profiles Operator installation conflicts
+```bash
+# If seeing "already exists" errors during installation
+# Clean up all SPO resources first:
+
+# Delete CRDs (cascade deletes all profiles)
+kubectl get crd | grep 'security-profiles-operator.x-k8s.io' | awk '{print $1}' | xargs kubectl delete crd
+
+# Delete ClusterRoles and ClusterRoleBindings
+kubectl get clusterrole | grep -E "(spo-|security-profiles)" | awk '{print $1}' | xargs kubectl delete clusterrole
+kubectl get clusterrolebinding | grep -E "(spo-|security-profiles)" | awk '{print $1}' | xargs kubectl delete clusterrolebinding
+
+# Delete webhooks
+kubectl delete mutatingwebhookconfiguration spo-mutating-webhook-configuration
+kubectl delete validatingwebhookconfiguration spo-validating-webhook-configuration
+
+# Then re-run installation
+./7-security-setup.sh
+```
+
+#### Problem: Need to manually remove AppArmor profile from host
+```bash
+# Check if profile is loaded on host
+sudo aa-status | grep notebook
+
+# Remove profile if needed
+echo "profile notebook {}" | sudo apparmor_parser -R
+
+# Or unload all SPO-managed profiles
+sudo aa-status | grep -E "notebook|spo-" | awk '{print $1}' | while read profile; do
+  echo "profile $profile {}" | sudo apparmor_parser -R 2>/dev/null || true
+done
+```
+
+### 5. NFS Mount Issues
 
 #### Problem: PVC stuck in "Pending"
 ```bash
@@ -816,16 +1007,28 @@ kubectl get pv | grep -E "jupyter|longhorn" | awk '{print $1}' | xargs kubectl d
 # 5. Clean orphaned user PVCs (if any remain)
 kubectl get pv | grep "jupyter-.*" | awk '{print $1}' | xargs kubectl delete pv
 
-# 6. Start fresh
+# 6. Start fresh installation following proper order
 bash 2-install-longhorn.sh
 # Wait for Longhorn to be ready
 kubectl wait --for=condition=ready pod -l app=longhorn-manager -n longhorn-system --timeout=300s
 
-bash 6-install-jupyterhub.sh
+bash 6-cvmfs-mounts.sh
+# Wait for CVMFS to be ready
+kubectl wait --for=condition=ready pod -l app=smarter-device-manager -n mounts --timeout=300s
+
+bash 7-security-setup.sh
+# Wait for Security Profiles Operator to be ready
+kubectl wait --for=condition=ready pod -l app=spod -n security --timeout=300s
+
+bash 8-install-jupyterhub.sh
 # Wait for JupyterHub to be ready
 kubectl wait --for=condition=ready pod -l component=hub -n jupyter --timeout=300s
 
-bash 8-verify.sh
+# Verify all components
+kubectl get pods -n jupyter
+kubectl get pods -n mounts
+kubectl get pods -n security
+kubectl get apparmorprofile -n security
 ```
 
 ## Key Log Locations
@@ -854,7 +1057,14 @@ kubectl logs -n longhorn-system -l app=longhorn-manager
 # 7. NFS server logs
 kubectl logs -n storage deploy/nfs-server
 
-# 8. Ingress controller logs (OAuth callbacks, routing)
+# 8. CVMFS logs (CSI driver and device manager)
+kubectl logs -n mounts -l app=smarter-device-manager
+kubectl logs -n mounts -l app=cvmfs-csi-nodeplugin
+
+# 9. Security Profiles Operator logs (AppArmor profiles)
+kubectl logs -n security -l app=spod
+
+# 10. Ingress controller logs (OAuth callbacks, routing)
 kubectl logs -n ingress -l app.kubernetes.io/name=ingress-nginx -f
 ```
 

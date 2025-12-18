@@ -96,21 +96,39 @@ Complete integration of JupyterHub with XNAT on Kubernetes.
 - **Spawner:** KubeSpawner with custom pre_spawn_hook
 
 #### Storage Layer
-- **Longhorn:** 
+- **Longhorn:**
   - Dynamic provisioning for user home directories
   - Hub database persistence
   - Block storage with replication
-  
+
 - **NFS:**
   - Shared storage for XNAT data
   - Read-only project data access
   - Read-write workspace directory
 
+- **CVMFS:**
+  - CVMFS CSI driver for repository access
+  - Provides access to scientific software repositories
+  - Mounted at `/cvmfs` in user notebooks
+  - Uses smarter-device-manager for FUSE device access
+
+#### Security Layer
+- **Security Profiles Operator (neurodesk fork):**
+  - Manages AppArmor profiles for notebooks
+  - Enforces container security policies
+  - Prevents cryptocurrency mining and unauthorized processes
+  - Automatic profile loading and enforcement
+
+- **AppArmor Profiles:**
+  - `notebook` profile applied to all user containers
+  - Allows CVMFS access and required capabilities
+  - Blocks known malicious binaries
+
 #### Network Layer
 - **Ingress:** Single entry point (`xnat-test.ssdsorg.cloud.edu.au`)
   - `/` → XNAT
   - `/jupyter` → JupyterHub
-  
+
 - **Internal Services:**
   - `xnat-web.ais-xnat.svc.cluster.local` (XNAT API)
   - `proxy-public.jupyter.svc.cluster.local` (JupyterHub API)
@@ -166,8 +184,10 @@ chmod +x 1-cleanup.sh
 This removes:
 - Old JupyterHub installation
 - Old Longhorn installation
+- Security Profiles Operator
+- CVMFS CSI driver
 - Orphaned PVCs and PVs
-- jupyter namespace
+- jupyter, security, and cvmfs namespaces
 
 **Wait for cleanup to complete before proceeding.**
 
@@ -183,6 +203,7 @@ Longhorn provides:
 - Storage replication
 - Snapshot capabilities
 - Volume management UI
+- Automatic BackupTarget configuration
 
 **Expected time:** 3-5 minutes
 
@@ -211,14 +232,55 @@ Creates one PVC in the jupyter namespace:
 Verify binding:
 ```bash
 kubectl get pvc -n jupyter
-# Both should show STATUS: Bound
+# Should show STATUS: Bound
 ```
 
-### Step 6: Install JupyterHub
+### Step 6: Install CVMFS CSI Driver
 
 ```bash
-chmod +x 6-install-jupyterhub.sh
-./6-install-jupyterhub.sh
+chmod +x 6-cvmfs-mounts.sh
+./6-cvmfs-mounts.sh
+```
+
+This installs:
+- CVMFS CSI driver for scientific software repositories
+- smarter-device-manager for FUSE device access
+- Node labels for device management
+- CVMFS StorageClass configuration
+
+**Expected time:** 2-3 minutes
+
+Verify:
+```bash
+kubectl get pods -n mounts -l app=smarter-device-manager
+# Should show DaemonSet pods running on all nodes
+```
+
+### Step 7: Install Security Profiles Operator
+
+```bash
+chmod +x 7-security-setup.sh
+./7-security-setup.sh
+```
+
+This installs:
+- Security Profiles Operator (neurodesk fork with AppArmor support)
+- AppArmor profile for notebook containers
+- Automatic profile loading and enforcement
+
+**Expected time:** 2-3 minutes
+
+Verify AppArmor profile is ready:
+```bash
+kubectl get apparmorprofile -n security
+# Should show: notebook   Installed   True
+```
+
+### Step 8: Install JupyterHub
+
+```bash
+chmod +x 8-install-jupyterhub.sh
+./8-install-jupyterhub.sh
 ```
 
 This installs:
@@ -226,27 +288,32 @@ This installs:
 - Configurable HTTP Proxy
 - User notebook spawner
 - AAF OAuth configuration
+- AppArmor profile enforcement
+- CVMFS mount configuration
 
 **Expected time:** 5-10 minutes
 
-### Step 7: Verify Installation
+### Step 9: Verify Installation
 
+Manual verification checks:
 ```bash
-chmod +x 8-verify.sh
-./8-verify.sh
+# Check JupyterHub
+kubectl get pods -n jupyter
+
+# Check Security Profiles
+kubectl get apparmorprofile -n security
+
+# Check CVMFS
+kubectl get pods -n mounts -l app=smarter-device-manager
+kubectl get pods -n mounts -l component=nodeplugin
+
+# Check Longhorn
+kubectl get pods -n longhorn-system
 ```
 
-Runs comprehensive checks:
-- Longhorn health
-- Namespace and resources
-- PV/PVC bindings
-- Pod status
-- Service configuration
-- API accessibility
+**All components should be running before proceeding.**
 
-**All tests should pass before proceeding.**
-
-### Step 8: Configure XNAT Plugin
+### Step 10: Configure XNAT Plugin
 
 Follow detailed guide in `XNAT-CONFIGURATION.md`:
 
@@ -351,10 +418,10 @@ curl -X POST \
   http://proxy-public.jupyter.svc.cluster.local/jupyter/hub/api/users/testuser/server
 
 # Check pod creation
-kubectl get pods -n jupyter | grep jupyter-testuser
+kubectl get pods -n jupyter | grep jupyter-<testuser>
 
 # Check logs
-kubectl logs -n jupyter jupyter-testuser
+kubectl logs -n jupyter jupyter-<testuser>
 ```
 
 ### Test 3: Data Access
@@ -362,13 +429,13 @@ kubectl logs -n jupyter jupyter-testuser
 Once user pod is running:
 ```bash
 # Check mounts
-kubectl exec -n jupyter jupyter-testuser -- df -h
+kubectl exec -n jupyter jupyter-<testuser> -- df -h
 
 # Check project data
-kubectl exec -n jupyter jupyter-testuser -- ls -la /data/xnat/projects/
+kubectl exec -n jupyter jupyter-<testuser> -- ls -la /data/xnat/projects/
 
 # Check home directory
-kubectl exec -n jupyter jupyter-testuser -- ls -la /home/jovyan/
+kubectl exec -n jupyter jupyter-<testuser> -- ls -la /home/jovyan/
 ```
 
 ---
@@ -489,10 +556,15 @@ Use this checklist to track your installation:
 - [ ] Jupyter namespace created
 - [ ] NFS PVs created (`3-nfs-pv.yaml`)
 - [ ] NFS PVC created and bound (`4-nfs-pvc.yaml`)
-- [ ] JupyterHub installed (`6-install-jupyterhub.sh`)
-- [ ] Verification passed (`8-verify.sh`)
+- [ ] CVMFS CSI driver installed (`6-cvmfs-mounts.sh`)
+- [ ] Security Profiles Operator installed (`7-security-setup.sh`)
+- [ ] AppArmor profile verified (status: Installed)
+- [ ] JupyterHub installed (`8-install-jupyterhub.sh`)
+- [ ] All components verified (JupyterHub, Security, CVMFS, Longhorn)
 - [ ] XNAT plugin configured (`XNAT-CONFIGURATION.md`)
 - [ ] Test user workflow completed
+- [ ] AppArmor enforcement verified in user pods
+- [ ] CVMFS mount verified in user pods
 - [ ] Production settings reviewed
 
 ---

@@ -149,7 +149,7 @@ echo "Checking Security Profiles..."
 kubectl get apparmorprofile -n security
 echo ""
 echo "Checking CVMFS mounts..."
-kubectl get pods -n jupyter -l component=cvmfs 2>/dev/null || echo "No CVMFS pods (expected if using CSI)"
+kubectl get pods -n mounts -l component=cvmfs 2>/dev/null || echo "No CVMFS pods (expected if using CSI)"
 echo ""
 echo "Checking Longhorn..."
 kubectl get pods -n longhorn-system

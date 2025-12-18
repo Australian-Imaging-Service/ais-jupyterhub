@@ -71,6 +71,21 @@ microk8s kubectl delete namespace longhorn-system --force --grace-period=0 2>/de
 
 # 7. Clean up any orphaned PVs
 echo "[7/9] Cleaning up orphaned PersistentVolumes..."
+
+# First, clear claimRef from any Released PVs to prevent binding issues
+echo "  Clearing claimRef from Released PVs..."
+for pv in $(microk8s kubectl get pv -o json | jq -r '.items[] | select(.status.phase == "Released") | .metadata.name' 2>/dev/null || true); do
+  echo "    Resetting PV: $pv"
+  microk8s kubectl patch pv "$pv" -p '{"spec":{"claimRef": null}}' 2>/dev/null || true
+done
+
+# Also specifically handle jupyter-xnat-gpfs-shared if it exists
+if microk8s kubectl get pv jupyter-xnat-gpfs-shared &>/dev/null; then
+  echo "  Clearing claimRef from jupyter-xnat-gpfs-shared..."
+  microk8s kubectl patch pv jupyter-xnat-gpfs-shared -p '{"spec":{"claimRef": null}}' 2>/dev/null || true
+fi
+
+# Then delete orphaned PVs
 microk8s kubectl get pv | grep -E "jupyter|longhorn" | awk '{print $1}' | xargs -r microk8s kubectl delete pv 2>/dev/null || true
 
 # 8. Complete CVMFS cleanup
@@ -89,12 +104,11 @@ microk8s kubectl get pv 2>/dev/null | grep cvmfs | awk '{print $1}' | xargs -r m
 
 # Uninstall CVMFS CSI driver from both possible namespaces
 echo "  Uninstalling CVMFS CSI driver..."
-microk8s helm uninstall cvmfs-csi -n jupyter 2>/dev/null || true
-microk8s helm uninstall cvmfs-csi -n cvmfs 2>/dev/null || true
+microk8s helm uninstall cvmfs-csi -n mounts 2>/dev/null || true
 
 # Uninstall smarter-device-manager
 echo "  Uninstalling smarter-device-manager..."
-microk8s helm uninstall smarter-device-manager -n jupyter 2>/dev/null || true
+microk8s helm uninstall smarter-device-manager -n mounts 2>/dev/null || true
 
 # Remove node labels
 echo "  Removing node labels..."
@@ -106,15 +120,14 @@ done
 echo "  Deleting CVMFS StorageClass..."
 microk8s kubectl delete storageclass cvmfs --ignore-not-found=true 2>/dev/null || true
 
-# Delete CVMFS namespaces
-microk8s kubectl delete namespace cvmfs 2>/dev/null || true
+# Delete CVMFS namespace
 microk8s kubectl delete namespace mounts 2>/dev/null || true
 
 # Clean up CVMFS DaemonSet if exists
 microk8s kubectl delete daemonset cvmfs-nodeplugin -n kube-system 2>/dev/null || true
 
 # 9. Clean up CVMFS on nodes
-echo "[9/9] Cleaning up CVMFS mounts and autofs..."
+echo "[9/9] Cleaning up CVMFS mounts ..."
 # Unmount CVMFS repositories
 if mount | grep -q /cvmfs; then
     echo "  Unmounting CVMFS repositories..."
@@ -144,9 +157,9 @@ echo ""
 echo "Verify cleanup:"
 echo "  microk8s kubectl get all -n jupyter"
 echo "  microk8s kubectl get all -n security"
-echo "  microk8s kubectl get all -n cvmfs"
+echo "  microk8s kubectl get all -n mounts"
 echo "  microk8s kubectl get pvc -n jupyter"
-echo "  microk8s kubectl get ns | grep -E 'jupyter|security|cvmfs|longhorn'"
+echo "  microk8s kubectl get ns | grep -E 'jupyter|security|mounts|longhorn'"
 echo "  microk8s helm list -A"
 echo "  mount | grep cvmfs"
 echo "  sudo aa-status | grep notebook"
