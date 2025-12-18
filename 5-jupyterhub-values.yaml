@@ -10,7 +10,7 @@ hub:
     JupyterHub:
       authenticator_class: generic-oauth
       base_url: /jupyter
-      log_level: DEBUG  # Enable debug logging
+      log_level: INFO
 
     GenericOAuthenticator:
       client_id: "70870f7a-f70e-4acd-829f-0f611f1d40de"
@@ -29,6 +29,10 @@ hub:
       refresh_pre_spawn: false
     
     KubeSpawner:
+      # Increase timeout for large image pulls (neurodesk images can be several GB)
+      start_timeout: 900  # 15 minutes to allow for large image pulls
+      http_timeout: 120   # 2 minutes for HTTP requests
+
       extra_resource_limits:
         smarter-devices/fuse: "1"
       extra_resource_guarantees:
@@ -37,7 +41,7 @@ hub:
       # Apply AppArmor profile to all notebooks automatically
       extra_container_config:
         securityContext:
-          # privileged: true
+          privileged: false
           # Uncomment below when AppArmor profile is loaded on nodes
           appArmorProfile:
             type: Localhost
@@ -91,50 +95,66 @@ hub:
     01_add_xnat_username_column: |
       from sqlalchemy import Column, String
       from jupyterhub import orm
-      
+
       if not hasattr(orm.User, 'xnat_username'):
           orm.User.xnat_username = Column(String(255), nullable=True)
+
+      if not hasattr(orm.User, 'eduperson_principal_name'):
+          orm.User.eduperson_principal_name = Column(String(255), nullable=True)
 
     02_username_normalization: |
       from oauthenticator.generic import GenericOAuthenticator
       from jupyterhub.apihandlers.users import UserAPIHandler, UserServerAPIHandler
       from jupyterhub.handlers import BaseHandler
-      
+      from jupyterhub import orm
+      import json
+
       def normalize_username(username):
           if not username:
               return username, username
-          
+
           original = username
-          
+
           if username.startswith('aaf_'):
               username = username[4:]
-          
+
           normalized = f'aaf_{username.lower()}'
-          
+
           return normalized, original
-      
+
       def normalize_aaf(self, username):
           normalized, original = normalize_username(username)
           return normalized
-      
+
       GenericOAuthenticator.normalize_username = normalize_aaf
-      
+
       original_authenticate = GenericOAuthenticator.authenticate
-      
+
       async def authenticate_with_storage(self, handler, data=None, **kwargs):
           result = await original_authenticate(self, handler, data, **kwargs)
+
           if result and isinstance(result, dict):
               username = result.get('name')
               if username:
-                  user_info = getattr(handler, 'user_info', None)
+                  auth_state = result.get('auth_state', {})
+                  user_info = auth_state.get('oauth_user', {})
+
                   if user_info:
                       original_username = user_info.get('sub', username)
-                      user = self.db.query(self.orm.User).filter_by(name=username).first()
-                      if user and not user.xnat_username:
-                          user.xnat_username = original_username
+                      eduperson_principal = user_info.get('edu_person_principal_name', '')
+
+                      user = self.db.query(orm.User).filter_by(name=username).first()
+                      if user:
+                          if not user.xnat_username:
+                              user.xnat_username = original_username
+                          if not user.eduperson_principal_name and eduperson_principal:
+                              user.eduperson_principal_name = eduperson_principal
                           self.db.commit()
+                  else:
+                      self.log.warning(f"AAF did not return user info for {username}")
+
           return result
-      
+
       GenericOAuthenticator.authenticate = authenticate_with_storage
       
       original_user_get = UserAPIHandler.get
@@ -190,195 +210,42 @@ hub:
       UserServerAPIHandler.post = server_post_wrapper
       UserServerAPIHandler.delete = server_delete_wrapper
 
-    03_xnat_pre_spawn_hook_DEBUG: |
+    03_xnat_pre_spawn_hook: |
       import json
-      
+
       async def pre_spawn_hook(spawner):
           import requests
           from requests.auth import HTTPBasicAuth
           import os
-          
-          spawner.log.info("="*80)
-          spawner.log.info("DEBUG: PRE_SPAWN_HOOK STARTED")
-          spawner.log.info("="*80)
-          
-          # Get original XNAT username
+
           xnat_username = spawner.user.xnat_username or spawner.user.name
-          spawner.log.info(f"DEBUG: JupyterHub user = {spawner.user.name}")
-          spawner.log.info(f"DEBUG: XNAT user = {xnat_username}")
-          
-          # ==========================================
-          # STEP 1: INSPECT INITIAL STATE
-          # ==========================================
-          spawner.log.info("-"*80)
-          spawner.log.info("DEBUG: INITIAL STATE INSPECTION")
-          spawner.log.info("-"*80)
-          
-          # Check volumes attribute
-          spawner.log.info(f"DEBUG: spawner.volumes type = {type(getattr(spawner, 'volumes', None))}")
-          spawner.log.info(f"DEBUG: spawner.volumes value = {getattr(spawner, 'volumes', 'NOT SET')}")
-          
-          # Check volume_mounts attribute
-          spawner.log.info(f"DEBUG: spawner.volume_mounts type = {type(getattr(spawner, 'volume_mounts', None))}")
-          spawner.log.info(f"DEBUG: spawner.volume_mounts value = {getattr(spawner, 'volume_mounts', 'NOT SET')}")
-          
-          # Check extra_pod_config
-          spawner.log.info(f"DEBUG: spawner.extra_pod_config type = {type(getattr(spawner, 'extra_pod_config', None))}")
-          extra_pod_config = getattr(spawner, 'extra_pod_config', {})
-          if callable(extra_pod_config):
-              spawner.log.info("DEBUG: extra_pod_config is callable")
-          else:
-              spawner.log.info(f"DEBUG: extra_pod_config = {extra_pod_config}")
-          
-          # ==========================================
-          # STEP 2: EXTRACT EXISTING VOLUMES
-          # ==========================================
-          spawner.log.info("-"*80)
-          spawner.log.info("DEBUG: EXTRACTING EXISTING VOLUMES")
-          spawner.log.info("-"*80)
-          
+
           existing_volumes = getattr(spawner, 'volumes', {})
           existing_mounts = getattr(spawner, 'volume_mounts', {})
-          
-          spawner.log.info(f"DEBUG: existing_volumes RAW type = {type(existing_volumes)}")
-          spawner.log.info(f"DEBUG: existing_volumes RAW = {existing_volumes}")
-          spawner.log.info(f"DEBUG: existing_mounts RAW type = {type(existing_mounts)}")
-          spawner.log.info(f"DEBUG: existing_mounts RAW = {existing_mounts}")
-          
-          # Convert to list if dict
+
           if isinstance(existing_volumes, dict):
-              spawner.log.info("DEBUG: Converting existing_volumes from dict to list")
-              spawner.log.info(f"DEBUG: Dict keys = {list(existing_volumes.keys())}")
-              spawner.log.info(f"DEBUG: Dict values = {list(existing_volumes.values())}")
               existing_volumes = list(existing_volumes.values())
-              spawner.log.info(f"DEBUG: After conversion = {existing_volumes}")
-          
           if isinstance(existing_mounts, dict):
-              spawner.log.info("DEBUG: Converting existing_mounts from dict to list")
-              spawner.log.info(f"DEBUG: Dict keys = {list(existing_mounts.keys())}")
-              spawner.log.info(f"DEBUG: Dict values = {list(existing_mounts.values())}")
               existing_mounts = list(existing_mounts.values())
-              spawner.log.info(f"DEBUG: After conversion = {existing_mounts}")
-          
-          # Detailed inspection of each volume
-          spawner.log.info(f"DEBUG: Total existing volumes = {len(existing_volumes)}")
-          for i, vol in enumerate(existing_volumes):
-              spawner.log.info(f"DEBUG:   Volume[{i}]: {json.dumps(vol, indent=2)}")
-          
-          spawner.log.info(f"DEBUG: Total existing mounts = {len(existing_mounts)}")
-          for i, mount in enumerate(existing_mounts):
-              spawner.log.info(f"DEBUG:   Mount[{i}]: {json.dumps(mount, indent=2)}")
-          
-          # Check for CVMFS volume
-          cvmfs_volume = next((v for v in existing_volumes if v.get('name') == 'cvmfs'), None)
-          cvmfs_mount = next((m for m in existing_mounts if m.get('name') == 'cvmfs'), None)
-          
-          if cvmfs_volume:
-              spawner.log.info(f"DEBUG: ✓ CVMFS VOLUME FOUND: {cvmfs_volume}")
-          else:
-              spawner.log.error("DEBUG: ✗ CVMFS VOLUME NOT FOUND IN EXISTING VOLUMES!")
-          
-          if cvmfs_mount:
-              spawner.log.info(f"DEBUG: ✓ CVMFS MOUNT FOUND: {cvmfs_mount}")
-          else:
-              spawner.log.error("DEBUG: ✗ CVMFS MOUNT NOT FOUND IN EXISTING MOUNTS!")
-          
-          # ==========================================
-          # STEP 3: ADD XNAT VOLUMES
-          # ==========================================
-          spawner.log.info("-"*80)
-          spawner.log.info("DEBUG: ADDING XNAT VOLUMES")
-          spawner.log.info("-"*80)
-          
+
+          if not next((v for v in existing_volumes if v.get('name') == 'cvmfs'), None):
+              spawner.log.error("CVMFS volume not found in configuration")
+
           xnat_volumes = [
-              {
-                  'name': 'xnat-gpfs',
-                  'persistentVolumeClaim': {'claimName': 'xnat-gpfs'}
-              },
-              {
-                  'name': 'shm',
-                  'emptyDir': {'medium': 'Memory', 'sizeLimit': '2Gi'}
-              }
+              {'name': 'xnat-gpfs', 'persistentVolumeClaim': {'claimName': 'xnat-gpfs'}},
+              {'name': 'shm', 'emptyDir': {'medium': 'Memory', 'sizeLimit': '2Gi'}}
           ]
-          
-          xnat_mounts = [
-              {'name': 'shm', 'mountPath': '/dev/shm'}
-          ]
-          
-          spawner.log.info(f"DEBUG: XNAT volumes to add = {xnat_volumes}")
-          spawner.log.info(f"DEBUG: XNAT mounts to add = {xnat_mounts}")
-          
-          # ==========================================
-          # STEP 4: COMBINE VOLUMES
-          # ==========================================
-          spawner.log.info("-"*80)
-          spawner.log.info("DEBUG: COMBINING VOLUMES")
-          spawner.log.info("-"*80)
-          
-          spawner.log.info(f"DEBUG: BEFORE: existing_volumes length = {len(existing_volumes)}")
-          spawner.log.info(f"DEBUG: BEFORE: existing_mounts length = {len(existing_mounts)}")
-          
+
+          xnat_mounts = [{'name': 'shm', 'mountPath': '/dev/shm'}]
+
           spawner.volumes = existing_volumes + xnat_volumes
           spawner.volume_mounts = existing_mounts + xnat_mounts
-          
-          spawner.log.info(f"DEBUG: AFTER: spawner.volumes length = {len(spawner.volumes)}")
-          spawner.log.info(f"DEBUG: AFTER: spawner.volume_mounts length = {len(spawner.volume_mounts)}")
-          
-          # Verify CVMFS still exists after combination
-          cvmfs_volume_after = next((v for v in spawner.volumes if v.get('name') == 'cvmfs'), None)
-          cvmfs_mount_after = next((m for m in spawner.volume_mounts if m.get('name') == 'cvmfs'), None)
-          
-          if cvmfs_volume_after:
-              spawner.log.info(f"DEBUG: ✓ CVMFS VOLUME STILL PRESENT AFTER COMBINATION")
-          else:
-              spawner.log.error("DEBUG: ✗ CVMFS VOLUME LOST AFTER COMBINATION!")
-          
-          if cvmfs_mount_after:
-              spawner.log.info(f"DEBUG: ✓ CVMFS MOUNT STILL PRESENT AFTER COMBINATION")
-          else:
-              spawner.log.error("DEBUG: ✗ CVMFS MOUNT LOST AFTER COMBINATION!")
 
-          # ==========================================
-          # STEP 5: FINAL CONFIGURATION DUMP
-          # ==========================================
-          spawner.log.info("-"*80)
-          spawner.log.info("DEBUG: FINAL VOLUME CONFIGURATION")
-          spawner.log.info("-"*80)
-          
-          spawner.log.info(f"DEBUG: Total volumes = {len(spawner.volumes)}")
-          for i, vol in enumerate(spawner.volumes):
-              vol_name = vol.get('name', 'UNKNOWN')
-              vol_type = next((k for k in vol.keys() if k != 'name'), 'UNKNOWN')
-              spawner.log.info(f"DEBUG:   Volume[{i}]: name={vol_name}, type={vol_type}")
-              spawner.log.info(f"DEBUG:             detail={json.dumps(vol, indent=6)}")
-
-          spawner.log.info(f"DEBUG: Total mounts = {len(spawner.volume_mounts)}")
-          for i, mount in enumerate(spawner.volume_mounts):
-              mount_name = mount.get('name', 'UNKNOWN')
-              mount_path = mount.get('mountPath', 'UNKNOWN')
-              mount_prop = mount.get('mountPropagation', 'None')
-              spawner.log.info(f"DEBUG:   Mount[{i}]: name={mount_name}, path={mount_path}, propagation={mount_prop}")
-              spawner.log.info(f"DEBUG:            detail={json.dumps(mount, indent=6)}")
-
-          # Check for home directory
-          home_mount = next((m for m in spawner.volume_mounts if m.get('mountPath') == '/home/jovyan'), None)
-          if home_mount:
-              spawner.log.info(f"DEBUG: ✓ Home directory mount FOUND: {home_mount.get('name')}")
-          else:
-              spawner.log.error("DEBUG: ✗ Home directory mount MISSING!")
-
-          # ==========================================
-          # STEP 6: INIT CONTAINER SETUP
-          # ==========================================
-          spawner.log.info("-"*80)
-          spawner.log.info("DEBUG: SETTING UP INIT CONTAINER")
-          spawner.log.info("-"*80)
-          
           init_script = f"""
           set -e
           echo "[INIT] Starting workspace setup..."
           mkdir -p /data/xnat/workspaces/users
-          
+
           if [ -d "/data/xnat/workspaces/users/{xnat_username}" ]; then
               echo "[INIT] Found XNAT workspace: {xnat_username}"
               if [ "{xnat_username}" != "{spawner.user.name}" ]; then
@@ -393,7 +260,7 @@ hub:
               chmod 755 "/data/xnat/workspaces/users/{spawner.user.name}"
               echo "[INIT] Created new workspace: {spawner.user.name}"
           fi
-          
+
           echo "[INIT] Workspace setup complete"
           """
           
@@ -403,22 +270,11 @@ hub:
                   'image': 'busybox:1.35',
                   'command': ['sh', '-c'],
                   'args': [init_script],
-                  'volumeMounts': [
-                      {'name': 'xnat-gpfs', 'mountPath': '/data/xnat'}
-                  ],
+                  'volumeMounts': [{'name': 'xnat-gpfs', 'mountPath': '/data/xnat'}],
                   'securityContext': {'runAsUser': 0}
               }
           ]
-          
-          spawner.log.info(f"DEBUG: Init container configured")
-          
-          # ==========================================
-          # STEP 7: ADD WORKSPACE MOUNTS
-          # ==========================================
-          spawner.log.info("-"*80)
-          spawner.log.info("DEBUG: ADDING WORKSPACE MOUNTS")
-          spawner.log.info("-"*80)
-          
+
           workspace_mounts = [
               {
                   'name': 'xnat-gpfs',
@@ -433,58 +289,74 @@ hub:
                   'readOnly': False
               }
           ]
-          
-          for mount in workspace_mounts:
-              spawner.log.info(f"DEBUG: Adding workspace mount: {mount}")
-              spawner.volume_mounts.append(mount)
-          
-          # ==========================================
-          # STEP 8: XNAT API CALL
-          # ==========================================
-          spawner.log.info("-"*80)
-          spawner.log.info("DEBUG: QUERYING XNAT API")
-          spawner.log.info("-"*80)
-          
+
+          spawner.volume_mounts.extend(workspace_mounts)
+          spawner.working_dir = f'/workspace/{xnat_username}'
+
           try:
               xnat_host = os.getenv('XNAT_HOST', 'xnat-web.ais-xnat.svc.cluster.local')
               xnat_user = os.getenv('XNAT_USER', 'admin')
               xnat_pass = os.getenv('XNAT_PASSWORD', 'admin')
-              
-              spawner.log.info(f"DEBUG: XNAT host = {xnat_host}")
-              spawner.log.info(f"DEBUG: XNAT user = {xnat_user}")
-              
+
               response = requests.get(
                   f"http://{xnat_host}/xapi/jupyterhub/users/{xnat_username}/server/user-options",
                   auth=HTTPBasicAuth(xnat_user, xnat_pass),
                   timeout=5
               )
-              
-              spawner.log.info(f"DEBUG: XNAT API response status = {response.status_code}")
-              
+
               if response.status_code == 200:
                   options = response.json()
-                  spawner.log.info(f"DEBUG: XNAT API response = {json.dumps(options, indent=2)}")
-                  
-                  mounts = options.get('task_template', {}).get('container_spec', {}).get('mounts', [])
-                  spawner.log.info(f"DEBUG: XNAT mounts to add = {len(mounts)}")
-                  
+                  task_template = options.get('task_template', {})
+
+                  placement = task_template.get('placement', {})
+                  constraints = placement.get('constraints', [])
+                  if constraints:
+                      spawner.node_selector = {i.split('==')[0]: i.split('==')[-1] for i in constraints}
+
+                  resources = task_template.get('resources', {})
+                  if resources.get('cpu_limit'):
+                      spawner.cpu_limit = resources['cpu_limit']
+                  if resources.get('cpu_reservation'):
+                      spawner.cpu_guarantee = resources['cpu_reservation']
+                  if resources.get('mem_limit'):
+                      spawner.mem_limit = resources['mem_limit']
+                  if resources.get('mem_reservation'):
+                      spawner.mem_guarantee = resources['mem_reservation']
+
+                  generic_resources = resources.get('generic_resources', {})
+                  if generic_resources:
+                      if 'gpu' in generic_resources:
+                          generic_resources['nvidia.com/gpu'] = generic_resources.pop('gpu')
+                      spawner.extra_resource_guarantees = generic_resources
+                      spawner.extra_resource_limits = generic_resources
+
+                  container_spec = task_template.get('container_spec', {})
+                  image = container_spec.get('image')
+                  if image:
+                      spawner.image = image
+                      spawner.image_pull_policy = 'IfNotPresent'
+
+                  command = container_spec.get('command')
+                  if command:
+                      spawner.cmd = command.split(' ')
+
+                  env = container_spec.get('env', {})
+                  filtered_env = {
+                      k: v for k, v in env.items()
+                      if k not in ['JUPYTERHUB_ROOT_DIR', 'XDG_CONFIG_HOME']
+                  }
+                  spawner.environment.update(filtered_env)
+
+                  mounts = container_spec.get('mounts', [])
                   for mount in mounts:
                       source = mount.get('source', '')
                       target = mount.get('target', '')
                       read_only = mount.get('read_only', True)
-                      
-                      spawner.log.info(f"DEBUG: Processing XNAT mount: source={source}, target={target}")
-                      
-                      if 'workspaces' in source:
-                          spawner.log.info(f"DEBUG: Skipping workspace mount (already handled)")
+
+                      if 'workspaces' in source or not source.startswith('/data/xnat/'):
                           continue
-                      
-                      if source.startswith('/data/xnat/'):
-                          subpath = source[len('/data/xnat/'):]
-                      else:
-                          spawner.log.info(f"DEBUG: Skipping non-XNAT mount: {source}")
-                          continue
-                      
+
+                      subpath = source[len('/data/xnat/'):]
                       xnat_mount = {
                           'name': 'xnat-gpfs',
                           'mountPath': target,
@@ -492,103 +364,13 @@ hub:
                           'readOnly': read_only
                       }
                       spawner.volume_mounts.append(xnat_mount)
-                      spawner.log.info(f"DEBUG: Added XNAT project mount: {target} -> {subpath}")
-                  
-                  resources = options.get('task_template', {}).get('resources', {})
-                  if 'cpu_limit' in resources:
-                      spawner.cpu_limit = resources['cpu_limit']
-                      spawner.log.info(f"DEBUG: Set CPU limit = {spawner.cpu_limit}")
-                  if 'mem_limit' in resources:
-                      spawner.mem_limit = resources['mem_limit']
-                      spawner.log.info(f"DEBUG: Set memory limit = {spawner.mem_limit}")
-                  
-                  env = options.get('task_template', {}).get('container_spec', {}).get('env', {})
-                  filtered_env = {
-                      k: v for k, v in env.items() 
-                      if k not in ['JUPYTERHUB_ROOT_DIR', 'XDG_CONFIG_HOME']
-                  }
-                  spawner.environment.update(filtered_env)
-                  spawner.log.info(f"DEBUG: Applied env vars: {list(filtered_env.keys())}")
               else:
-                  spawner.log.warning(f"DEBUG: XNAT API returned {response.status_code}, no projects mounted")
-                  
+                  spawner.log.warning(f"XNAT API returned status {response.status_code}")
+
           except Exception as e:
-              spawner.log.warning(f"DEBUG: XNAT API error: {e}, continuing without project mounts")
-              import traceback
-              spawner.log.warning(f"DEBUG: Traceback: {traceback.format_exc()}")
-          
-          # ==========================================
-          # STEP 9: FINAL VERIFICATION
-          # ==========================================
-          spawner.log.info("="*80)
-          spawner.log.info("DEBUG: FINAL VERIFICATION BEFORE POD SPAWN")
-          spawner.log.info("="*80)
-          
-          spawner.log.info(f"DEBUG: Total volumes = {len(spawner.volumes)}")
-          spawner.log.info(f"DEBUG: Total volume_mounts = {len(spawner.volume_mounts)}")
-          
-          # Check critical volumes
-          cvmfs_vol = next((v for v in spawner.volumes if v.get('name') == 'cvmfs'), None)
-          cvmfs_mnt = next((m for m in spawner.volume_mounts if m.get('name') == 'cvmfs'), None)
-          home_vol = next((v for v in spawner.volumes if 'jupyter' in v.get('name', '')), None)
-          home_mnt = next((m for m in spawner.volume_mounts if '/home/jovyan' in m.get('mountPath', '')), None)
-          
-          spawner.log.info(f"DEBUG: CVMFS volume present: {cvmfs_vol is not None}")
-          spawner.log.info(f"DEBUG: CVMFS mount present: {cvmfs_mnt is not None}")
-          spawner.log.info(f"DEBUG: Home volume present: {home_vol is not None}")
-          spawner.log.info(f"DEBUG: Home mount present: {home_mnt is not None}")
-          
-          if cvmfs_vol and cvmfs_mnt:
-              spawner.log.info(f"DEBUG: ✓✓✓ CVMFS CONFIGURATION COMPLETE ✓✓✓")
-              spawner.log.info(f"DEBUG:   Volume: {cvmfs_vol}")
-              spawner.log.info(f"DEBUG:   Mount: {cvmfs_mnt}")
-          else:
-              spawner.log.error("DEBUG: ✗✗✗ CVMFS CONFIGURATION MISSING ✗✗✗")
-          
-          spawner.log.info("="*80)
-          spawner.log.info("DEBUG: PRE_SPAWN_HOOK COMPLETED")
-          spawner.log.info("="*80)
+              spawner.log.warning(f"XNAT API error: {e}")
       
       c.KubeSpawner.pre_spawn_hook = pre_spawn_hook
-
-    # ADD POST-SPAWN VERIFICATION
-    04_post_spawn_verification: |
-      async def post_spawn_hook(spawner):
-          spawner.log.info("="*80)
-          spawner.log.info("DEBUG: POST_SPAWN_HOOK - POD HAS STARTED")
-          spawner.log.info("="*80)
-          
-          spawner.log.info(f"DEBUG: Pod name = {spawner.pod_name}")
-          spawner.log.info(f"DEBUG: Pod namespace = {spawner.namespace}")
-          
-          # Try to get pod spec
-          try:
-              from kubernetes import client, config
-              config.load_incluster_config()
-              v1 = client.CoreV1Api()
-              
-              pod = v1.read_namespaced_pod(name=spawner.pod_name, namespace=spawner.namespace)
-              
-              spawner.log.info("-"*80)
-              spawner.log.info("DEBUG: ACTUAL POD VOLUMES")
-              spawner.log.info("-"*80)
-              for vol in pod.spec.volumes:
-                  spawner.log.info(f"DEBUG:   Volume: {vol.name} - {vol}")
-              
-              spawner.log.info("-"*80)
-              spawner.log.info("DEBUG: ACTUAL POD VOLUME MOUNTS")
-              spawner.log.info("-"*80)
-              for container in pod.spec.containers:
-                  if container.name == 'notebook':
-                      for mount in container.volume_mounts:
-                          spawner.log.info(f"DEBUG:   Mount: {mount.name} -> {mount.mount_path} (propagation={mount.mount_propagation})")
-              
-          except Exception as e:
-              spawner.log.error(f"DEBUG: Could not inspect pod: {e}")
-          
-          spawner.log.info("="*80)
-      
-      c.KubeSpawner.post_spawn_hook = post_spawn_hook
 
   db:
     type: sqlite-pvc
@@ -602,6 +384,10 @@ proxy:
 
 singleuser:
   defaultUrl: /lab
+
+  # Reduce termination grace period to prevent stuck pods
+  extraPodConfig:
+    terminationGracePeriodSeconds: 10
 
   extraFiles:
     internal_culling_config:
