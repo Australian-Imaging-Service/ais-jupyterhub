@@ -13,8 +13,10 @@ hub:
       log_level: INFO
 
     GenericOAuthenticator:
+      # SECURITY: Sensitive values moved to 5-jupyterhub-secrets.yaml (encrypted with SOPS)
+      # To view/edit: sops 5-jupyterhub-secrets.yaml
       client_id: "70870f7a-f70e-4acd-829f-0f611f1d40de"
-      client_secret: "wdNMMmFGmufaMsP6txVEolL9vbNMyuZ0CFQuaxzpdZGqKFk27QquTQ6FOGChH9GmNXx4Vkmwkok2"
+      # client_secret: MOVED TO SECRETS FILE
       oauth_callback_url: "https://xnat-test.ssdsorg.cloud.edu.au/jupyter/hub/oauth_callback"
       authorize_url: "https://central.test.aaf.edu.au/providers/op/authorize"
       token_url: "https://central.test.aaf.edu.au/providers/op/token"
@@ -61,7 +63,7 @@ hub:
   services:
     xnat-service:
       admin: true
-      apiToken: "eda886c63564930a7f21ad8465463bf9555bad7d1dfa0a2fb259ac556ea8420e"
+      # apiToken: MOVED TO SECRETS FILE (5-jupyterhub-secrets.yaml)
     
     user-cull:
       command:
@@ -74,10 +76,10 @@ hub:
         - --url=http://localhost:8081/jupyter/hub/api
 
   extraEnv:
-    JUPYTERHUB_CRYPT_KEY_HEX: "62c5252a18d4c48ea3b6ca199f501c439a58be3521d01f0055518a1d2a46c3fe"
+    # JUPYTERHUB_CRYPT_KEY_HEX: MOVED TO SECRETS FILE (5-jupyterhub-secrets.yaml)
     XNAT_HOST: "xnat-web.ais-xnat.svc.cluster.local"
     XNAT_USER: "admin"
-    XNAT_PASSWORD: "admin"
+    # XNAT_PASSWORD: MOVED TO SECRETS FILE (5-jupyterhub-secrets.yaml)
 
   extraConfig:
     00_set_crypt_key: |

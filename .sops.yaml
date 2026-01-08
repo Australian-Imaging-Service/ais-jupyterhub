@@ -1,0 +1,14 @@
+# SOPS configuration file
+# Defines which files should be encrypted and with which key
+
+creation_rules:
+  # Encrypt secrets files with age
+  - path_regex: .*secrets\.yaml$
+    age: age1mr3cvqpw39jdh2tawm43r5wxjv2qpkqtkhhvyyn4w8gtfjnrvs2sw4nkt7
+    # Only encrypt values containing these patterns (case insensitive)
+    encrypted_regex: (client_secret|apiToken|password|secret|key|token|SECRET|PASSWORD|KEY|TOKEN|CRYPT|crypt)
+
+  # Encrypt any file with .enc.yaml extension
+  - path_regex: .*\.enc\.yaml$
+    age: age1mr3cvqpw39jdh2tawm43r5wxjv2qpkqtkhhvyyn4w8gtfjnrvs2sw4nkt7
+    encrypted_regex: ^(data|stringData|client_secret|apiToken|password|secret|key|token)$

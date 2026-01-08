@@ -501,20 +501,66 @@ User Notebook → Launches with restricted access
 - ✅ Regular security audits of pod configurations
 - ✅ Monitor API access logs
 
-### Secrets Management
+### Secrets Management with SOPS
 
-Current secrets in configuration:
-- AAF client_id and client_secret
-- XNAT admin credentials
-- JupyterHub service token
+This repository uses **SOPS (Secrets OPerationS)** with **age encryption** to securely manage sensitive values.
 
-**For production:** Move to Kubernetes Secrets:
+**Files:**
+- `5-jupyterhub-secrets.yaml` - Encrypted secrets (OAuth, tokens, passwords)
+- `5-jupyterhub-values.yaml` - Public configuration
+- `.keys/age-key.txt` - Private encryption key (NOT in git)
+
+**Quick Start:**
 ```bash
-kubectl create secret generic jupyterhub-secrets -n jupyter \
-  --from-literal=aaf-client-id='xxx' \
-  --from-literal=aaf-client-secret='xxx' \
-  --from-literal=xnat-admin-password='xxx'
+# First time setup
+./sops-setup.sh
+
+# View secrets (read-only)
+./sops-helper.sh view
+
+# Edit secrets (opens in $EDITOR, auto-encrypts on save)
+./sops-helper.sh edit
+
+# Deploy JupyterHub (script will offer 3 methods)
+./8-install-jupyterhub.sh
+# Option 1: helm-secrets plugin (auto-installs if needed)
+# Option 2: Manual temp file decryption
+# Option 3: Values file only
+
+# Or manually with helm-secrets:
+export SOPS_AGE_KEY_FILE="$(pwd)/.keys/age-key.txt"
+helm secrets install jupyterhub jupyterhub/jupyterhub \
+  --namespace jupyter \
+  -f 5-jupyterhub-values.yaml \
+  -f secrets://5-jupyterhub-secrets.yaml
 ```
+
+**What's encrypted:**
+- OAuth2 `client_secret`
+- JupyterHub service `apiToken`
+- `JUPYTERHUB_CRYPT_KEY_HEX`
+- `XNAT_PASSWORD`
+
+**For same team members:** Get `.keys/age-key.txt` from your team lead and place it in `.keys/` directory to access existing secrets.
+
+**For new organizations using this repo:**
+```bash
+# 1. Generate YOUR OWN encryption key
+./sops-setup.sh
+
+# 2. Generate fresh secrets with random values
+./sops-helper.sh generate
+
+# 3. Edit with your actual values (OAuth credentials, passwords, etc.)
+./sops-helper.sh edit
+
+# 4. Deploy
+./8-install-jupyterhub.sh
+```
+
+The existing `5-jupyterhub-secrets.yaml` is encrypted with the original key - you cannot decrypt it. You must create your own secrets file with your own key.
+
+**CI/CD:** Store the age private key as a secret (`AGE_SECRET_KEY`) in your CI/CD platform and install SOPS/age in your pipeline.
 
 ---
 

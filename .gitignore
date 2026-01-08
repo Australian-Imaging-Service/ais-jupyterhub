@@ -1,0 +1,3 @@
+# SOPS encryption keys - DO NOT COMMIT
+.keys/
+*.dec.yaml
