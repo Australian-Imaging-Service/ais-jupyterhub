@@ -508,7 +508,7 @@ This repository uses **SOPS (Secrets OPerationS)** with **age encryption** to se
 **Files:**
 - `5-jupyterhub-secrets.yaml` - Encrypted secrets (OAuth, tokens, passwords)
 - `5-jupyterhub-values.yaml` - Public configuration
-- `.keys/age-key.txt` - Private encryption key (NOT in git)
+- `.keys/age-key.txt` - Private encryption key (stored locally)
 
 **Quick Start:**
 ```bash
@@ -558,7 +558,7 @@ helm secrets install jupyterhub jupyterhub/jupyterhub \
 ./8-install-jupyterhub.sh
 ```
 
-The existing `5-jupyterhub-secrets.yaml` is encrypted with the original key - you cannot decrypt it. You must create your own secrets file with your own key.
+The existing `5-jupyterhub-secrets.yaml` is encrypted with the original key - you cannot decrypt it. You must create your own secrets file with your own key with method described above.
 
 **CI/CD:** Store the age private key as a secret (`AGE_SECRET_KEY`) in your CI/CD platform and install SOPS/age in your pipeline.
 
