@@ -3,7 +3,7 @@
 # # - Internal culling: 2 hours idle timeout (aggressive, pod-level)
 # # - External culling: 24 hours idle timeout (backup, hub-level)
 # # ===============================================================================================================================
-
+# edu person principal name as the user name 
 hub:
   baseUrl: /jupyter
   config:
