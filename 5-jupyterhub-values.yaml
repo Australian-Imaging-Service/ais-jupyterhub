@@ -1,9 +1,11 @@
-# # JupyterHub Configuration for XNAT Integration (Hub 5.4.1 / Z2JH 4.3.x)
-# # ==========================================================
-# # - Internal culling: 2 hours idle timeout (aggressive, pod-level)
-# # - External culling: 24 hours idle timeout (backup, hub-level)
-# # ===============================================================================================================================
-# edu person principal name as the user name 
+# JupyterHub Configuration for XNAT Integration (Hub 5.4.1 / Z2JH 4.3.x)
+# ==========================================================
+# - Internal culling: 2 hours idle timeout (aggressive, pod-level)
+# - External culling: 24 hours idle timeout (backup, hub-level)
+# - Username: aaf_{sub_claim} matches XNAT username exactly
+# - eduPersonPrincipalName stored separately for future use
+# ===============================================================================================================================
+
 hub:
   baseUrl: /jupyter
   config:
@@ -11,8 +13,11 @@ hub:
       authenticator_class: generic-oauth
       base_url: /jupyter
       log_level: INFO
+      allow_named_servers: true  # Enable multiple servers per user (XNAT uses named servers with timestamps)
+      named_server_limit_per_user: 1
 
     GenericOAuthenticator:
+      # DEV: Secrets kept inline (not moved to separate file)
       client_id: "70870f7a-f70e-4acd-829f-0f611f1d40de"
       client_secret: "wdNMMmFGmufaMsP6txVEolL9vbNMyuZ0CFQuaxzpdZGqKFk27QquTQ6FOGChH9GmNXx4Vkmwkok2"
       oauth_callback_url: "https://xnat-test.ssdsorg.cloud.edu.au/jupyter/hub/oauth_callback"
@@ -20,15 +25,14 @@ hub:
       token_url: "https://central.test.aaf.edu.au/providers/op/token"
       userdata_url: "https://central.test.aaf.edu.au/providers/op/userinfo"
       login_service: "AAF"
-      # username_claim: "sub"  # OLD: Use sub claim as username
-      username_claim: "edu_person_principal_name"  # NEW: Use eduPersonPrincipalName as username
+      username_claim: "sub"  # Use sub claim with aaf_ prefix normalization to match XNAT username
       scope: [openid, profile, email, eduperson_principal_name, eduperson_scoped_affiliation, eduperson_affiliation, eduperson_assurance, schac_home_organization, aueduperson]
       allow_all: true
-    
+
     Authenticator:
       enable_auth_state: false
       refresh_pre_spawn: false
-    
+
     KubeSpawner:
       # Increase timeout for large image pulls (neurodesk images can be several GB)
       start_timeout: 900  # 15 minutes to allow for large image pulls
@@ -47,7 +51,7 @@ hub:
           appArmorProfile:
             type: Localhost
             localhostProfile: notebook
-  
+
   loadRoles:
     user-cull:
       scopes:
@@ -58,12 +62,12 @@ hub:
         - admin:users
       services:
         - user-cull
-  
+
   services:
     xnat-service:
       admin: true
       apiToken: "eda886c63564930a7f21ad8465463bf9555bad7d1dfa0a2fb259ac556ea8420e"
-    
+
     user-cull:
       command:
         - python3
@@ -110,90 +114,65 @@ hub:
       from jupyterhub import orm
       import json
 
-      # OLD normalize_username for sub claim
-      # def normalize_username(username):
-      #     if not username:
-      #         return username, username
-      #     original = username
-      #     if username.startswith('aaf_'):
-      #         username = username[4:]
-      #     normalized = f'aaf_{username.lower()}'
-      #     return normalized, original
-
-      # NEW normalize_username for eduPersonPrincipalName (email format)
       def normalize_username(username):
+          """
+          Normalize username by adding aaf_ prefix to match XNAT username.
+
+          JupyterHub username = XNAT username = aaf_{sub_claim}
+
+          - Sub claim from AAF login: comes without aaf_ prefix
+          - XNAT username: has aaf_ prefix
+          - JupyterHub username: aaf_{sub_claim} (matches XNAT exactly)
+
+          This function adds aaf_ prefix if not already present.
+          """
           if not username:
-              return username, username
+              return username
 
-          original = username
-
-          # Handle email format from eduPersonPrincipalName (e.g., "uqabeniw@uq.edu.au")
-          if '@' in username:
-              username = username.split('@')[0]  # Extract username before @
-
-          # Remove aaf_ prefix if already present
+          # If already has aaf_ prefix, return as-is
           if username.startswith('aaf_'):
-              username = username[4:]
+              return username
 
-          # Add aaf_ prefix for JupyterHub username
-          normalized = f'aaf_{username.lower()}'
-
-          return normalized, original
+          # Add aaf_ prefix to match XNAT username format
+          return f'aaf_{username}'
 
       def normalize_aaf(self, username):
-          normalized, original = normalize_username(username)
-          return normalized
+          """Override JupyterHub normalizer to add aaf_ prefix"""
+          return normalize_username(username)
 
       GenericOAuthenticator.normalize_username = normalize_aaf
 
       original_authenticate = GenericOAuthenticator.authenticate
 
-      # OLD authenticate_with_storage for sub claim
-      # async def authenticate_with_storage(self, handler, data=None, **kwargs):
-      #     result = await original_authenticate(self, handler, data, **kwargs)
-      #     if result and isinstance(result, dict):
-      #         username = result.get('name')
-      #         if username:
-      #             auth_state = result.get('auth_state', {})
-      #             user_info = auth_state.get('oauth_user', {})
-      #             if user_info:
-      #                 original_username = user_info.get('sub', username)
-      #                 eduperson_principal = user_info.get('edu_person_principal_name', '')
-      #                 user = self.db.query(orm.User).filter_by(name=username).first()
-      #                 if user:
-      #                     if not user.xnat_username:
-      #                         user.xnat_username = original_username
-      #                     if not user.eduperson_principal_name and eduperson_principal:
-      #                         user.eduperson_principal_name = eduperson_principal
-      #                     self.db.commit()
-      #             else:
-      #                 self.log.warning(f"AAF did not return user info for {username}")
-      #     return result
-
-      # NEW authenticate_with_storage for eduPersonPrincipalName
       async def authenticate_with_storage(self, handler, data=None, **kwargs):
+          """
+          Authenticate and store mapping information in database.
+
+          Stores three fields:
+          1. name (primary key): aaf_{sub_claim} - JupyterHub username (same as XNAT)
+          2. xnat_username: aaf_{sub_claim} - redundant storage for mapping compatibility
+          3. eduperson_principal_name: raw email from AAF - stored for future use
+          """
           result = await original_authenticate(self, handler, data, **kwargs)
 
           if result and isinstance(result, dict):
-              username = result.get('name')  # This is now the normalized eduPersonPrincipalName (e.g., "aaf_uqabeniw")
+              username = result.get('name')  # This is the normalized sub claim: aaf_{sub}
+
               if username:
                   auth_state = result.get('auth_state', {})
                   user_info = auth_state.get('oauth_user', {})
 
                   if user_info:
-                      # Get sub claim (XNAT username) and eduPersonPrincipalName (raw email)
-                      sub_claim = user_info.get('sub', '')
+                      # Get eduPersonPrincipalName (email format) for future use
                       eduperson_principal = user_info.get('edu_person_principal_name', '')
 
                       user = self.db.query(orm.User).filter_by(name=username).first()
                       if user:
-                          # Store normalized sub claim as xnat_username (without aaf_ prefix)
-                          if not user.xnat_username and sub_claim:
-                              # Normalize sub claim and remove aaf_ prefix for XNAT storage
-                              xnat_user = sub_claim[4:] if sub_claim.startswith('aaf_') else sub_claim
-                              user.xnat_username = xnat_user.lower()
+                          # Store XNAT username (same as JupyterHub username) for mapping compatibility
+                          if not user.xnat_username:
+                              user.xnat_username = username
 
-                          # Store raw eduPersonPrincipalName email
+                          # Store eduPersonPrincipalName for future use
                           if not user.eduperson_principal_name and eduperson_principal:
                               user.eduperson_principal_name = eduperson_principal
 
@@ -204,77 +183,39 @@ hub:
           return result
 
       GenericOAuthenticator.authenticate = authenticate_with_storage
-      
-      # OLD API handler wrappers for sub claim
-      # original_user_get = UserAPIHandler.get
-      # original_user_post = UserAPIHandler.post
-      # original_user_delete = UserAPIHandler.delete
-      # original_user_patch = UserAPIHandler.patch
-      # async def user_get_wrapper(self, user_name):
-      #     normalized, original = normalize_username(user_name)
-      #     return await original_user_get(self, normalized)
-      # async def user_post_wrapper(self, user_name):
-      #     normalized, original = normalize_username(user_name)
-      #     result = await original_user_post(self, normalized)
-      #     user = self.find_user(normalized)
-      #     if user and not user.xnat_username:
-      #         user.xnat_username = original
-      #         self.db.commit()
-      #     return result
-      # async def user_delete_wrapper(self, user_name):
-      #     normalized, original = normalize_username(user_name)
-      #     return await original_user_delete(self, normalized)
-      # async def user_patch_wrapper(self, user_name):
-      #     normalized, original = normalize_username(user_name)
-      #     return await original_user_patch(self, normalized)
-      # UserAPIHandler.get = user_get_wrapper
-      # UserAPIHandler.post = user_post_wrapper
-      # UserAPIHandler.delete = user_delete_wrapper
-      # UserAPIHandler.patch = user_patch_wrapper
-      # original_server_post = UserServerAPIHandler.post
-      # original_server_delete = UserServerAPIHandler.delete
-      # async def server_post_wrapper(self, user_name, server_name=''):
-      #     normalized, original = normalize_username(user_name)
-      #     user = self.find_user(normalized)
-      #     if user and not user.xnat_username:
-      #         user.xnat_username = original
-      #         self.db.commit()
-      #     return await original_server_post(self, normalized, server_name)
-      # async def server_delete_wrapper(self, user_name, server_name=''):
-      #     normalized, original = normalize_username(user_name)
-      #     return await original_server_delete(self, normalized, server_name)
-      # UserServerAPIHandler.post = server_post_wrapper
-      # UserServerAPIHandler.delete = server_delete_wrapper
-
-      # NEW API handler wrappers for eduPersonPrincipalName
-      # These wrappers map XNAT usernames (sub claim) to JupyterHub usernames (eduPersonPrincipalName)
 
       def map_xnat_to_jupyterhub_username(handler, user_name):
           """
-          Map XNAT username (sub claim format) to JupyterHub username (eduPersonPrincipalName format).
+          Map XNAT username to JupyterHub username with fallback logic.
 
-          If user_name is already a JupyterHub username, return it as-is.
-          Otherwise, look up the user by xnat_username and return their JupyterHub username.
+          Since JupyterHub username = XNAT username (both are aaf_{sub}), this mainly
+          handles edge cases and backward compatibility:
+
+          1. Direct match: If user_name exists as JupyterHub username, return it
+          2. Database lookup: Try to find user by xnat_username field
+          3. Normalization: Apply aaf_ prefix normalization as fallback
+
+          This ensures API calls work regardless of whether XNAT sends:
+          - aaf_{sub} (exact match)
+          - {sub} without prefix (gets normalized)
+          - Any legacy format stored in xnat_username field
           """
           # First try to find user by JupyterHub username (direct match)
           user = handler.db.query(orm.User).filter_by(name=user_name).first()
           if user:
               return user.name
 
-          # If not found, try to find by xnat_username
-          # Normalize the incoming username (remove aaf_ prefix if present)
-          xnat_lookup = user_name[4:].lower() if user_name.startswith('aaf_') else user_name.lower()
-
-          # Search for user with matching xnat_username
-          user = handler.db.query(orm.User).filter_by(xnat_username=xnat_lookup).first()
+          # If not found, try to find by xnat_username field
+          user = handler.db.query(orm.User).filter_by(xnat_username=user_name).first()
           if user:
               return user.name
 
-          # If still not found, normalize as eduPersonPrincipalName and return
-          # This handles the case where XNAT sends an email format
-          normalized, _ = normalize_username(user_name)
+          # If still not found, normalize the username and return
+          # This handles cases where XNAT sends username without aaf_ prefix
+          normalized = normalize_username(user_name)
           return normalized
 
+      # Wrap UserAPIHandler methods to support XNAT username mapping
       original_user_get = UserAPIHandler.get
       original_user_post = UserAPIHandler.post
       original_user_delete = UserAPIHandler.delete
@@ -286,8 +227,7 @@ hub:
 
       async def user_post_wrapper(self, user_name):
           jupyterhub_username = map_xnat_to_jupyterhub_username(self, user_name)
-          result = await original_user_post(self, jupyterhub_username)
-          return result
+          return await original_user_post(self, jupyterhub_username)
 
       async def user_delete_wrapper(self, user_name):
           jupyterhub_username = map_xnat_to_jupyterhub_username(self, user_name)
@@ -302,6 +242,7 @@ hub:
       UserAPIHandler.delete = user_delete_wrapper
       UserAPIHandler.patch = user_patch_wrapper
 
+      # Wrap UserServerAPIHandler methods to support XNAT username mapping
       original_server_post = UserServerAPIHandler.post
       original_server_delete = UserServerAPIHandler.delete
 
@@ -324,7 +265,8 @@ hub:
           from requests.auth import HTTPBasicAuth
           import os
 
-          xnat_username = spawner.user.xnat_username or spawner.user.name
+          # Use JupyterHub username (which equals XNAT username)
+          xnat_username = spawner.user.name
 
           existing_volumes = getattr(spawner, 'volumes', {})
           existing_mounts = getattr(spawner, 'volume_mounts', {})
@@ -354,22 +296,16 @@ hub:
 
           if [ -d "/data/xnat/workspaces/users/{xnat_username}" ]; then
               echo "[INIT] Found XNAT workspace: {xnat_username}"
-              if [ "{xnat_username}" != "{spawner.user.name}" ]; then
-                  if [ ! -e "/data/xnat/workspaces/users/{spawner.user.name}" ]; then
-                      ln -s "{xnat_username}" "/data/xnat/workspaces/users/{spawner.user.name}"
-                      echo "[INIT] Created symlink: {spawner.user.name} -> {xnat_username}"
-                  fi
-              fi
           else
-              mkdir -p "/data/xnat/workspaces/users/{spawner.user.name}"
-              chown 1000:100 "/data/xnat/workspaces/users/{spawner.user.name}"
-              chmod 755 "/data/xnat/workspaces/users/{spawner.user.name}"
-              echo "[INIT] Created new workspace: {spawner.user.name}"
+              mkdir -p "/data/xnat/workspaces/users/{xnat_username}"
+              chown 1000:100 "/data/xnat/workspaces/users/{xnat_username}"
+              chmod 755 "/data/xnat/workspaces/users/{xnat_username}"
+              echo "[INIT] Created new workspace: {xnat_username}"
           fi
 
           echo "[INIT] Workspace setup complete"
           """
-          
+
           spawner.init_containers = [
               {
                   'name': 'workspace-setup',
@@ -384,20 +320,23 @@ hub:
           workspace_mounts = [
               {
                   'name': 'xnat-gpfs',
-                  'mountPath': f'/data/xnat/workspaces/users/{spawner.user.name}',
-                  'subPath': f'workspaces/users/{spawner.user.name}',
+                  'mountPath': f'/data/xnat/workspaces/users/{xnat_username}',
+                  'subPath': f'workspaces/users/{xnat_username}',
                   'readOnly': False
               },
               {
                   'name': 'xnat-gpfs',
                   'mountPath': f'/workspace/{xnat_username}',
-                  'subPath': f'workspaces/users/{spawner.user.name}',
+                  'subPath': f'workspaces/users/{xnat_username}',
                   'readOnly': False
               }
           ]
 
           spawner.volume_mounts.extend(workspace_mounts)
           spawner.working_dir = f'/workspace/{xnat_username}'
+
+          # Set XNAT_USERNAME environment variable for upload tool
+          spawner.environment['XNAT_USERNAME'] = xnat_username
 
           try:
               xnat_host = os.getenv('XNAT_HOST', 'xnat-web.ais-xnat.svc.cluster.local')
@@ -475,7 +414,7 @@ hub:
 
           except Exception as e:
               spawner.log.warning(f"XNAT API error: {e}")
-      
+
       c.KubeSpawner.pre_spawn_hook = pre_spawn_hook
 
   db:
@@ -506,7 +445,7 @@ singleuser:
         c.MappingKernelManager.cull_busy = False
         c.TerminalManager.cull_inactive_timeout = 7200
         c.TerminalManager.cull_interval = 600
-        
+
         import logging
         logging.getLogger('ServerApp').setLevel(logging.INFO)
 
@@ -533,13 +472,13 @@ singleuser:
       storageAccessModes: [ReadWriteOnce]
     capacity: 10Gi
     homeMountPath: /home/jovyan
-    
+
     # Extra volumes under storage
     extraVolumes:
       - name: cvmfs
         persistentVolumeClaim:
           claimName: cvmfs
-    
+
     extraVolumeMounts:
       - name: cvmfs
         mountPath: /cvmfs
@@ -548,6 +487,18 @@ singleuser:
   # Environment variables
   extraEnv:
     JUPYTER_ENABLE_LAB: "yes"
+    # XNAT server URL for upload tool (users authenticate with their own alias tokens)
+    XNAT_URL: "http://xnat-web.ais-xnat.svc.cluster.local"
+
+  # Network policy configuration
+  networkPolicy:
+    enabled: true
+    egress:
+      # Allow access to XNAT namespace (for upload tool)
+      - to:
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: ais-xnat
 
 ingress:
   enabled: true
