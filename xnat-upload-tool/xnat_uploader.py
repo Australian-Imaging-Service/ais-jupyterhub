@@ -21,7 +21,7 @@ Authentication:
     - Single session reuse (no session leaks)
 
 Author: Australian Imaging Service
-Version: 3.1.0 (Full xnatpy Integration)
+Version: 3.2.0 (Auto File Format Detection)
 """
 
 import os
@@ -33,6 +33,15 @@ import zipfile
 import tempfile
 from contextlib import contextmanager
 from urllib.parse import quote
+
+# Try to import fileformats library for better file type detection
+try:
+    from fileformats.core import find_matching
+    from fileformats.medimage import NiftiGz, NiftiGzX, Nifti1, NiftiX
+    from fileformats.medimage import DicomDir, DicomSeries
+    FILEFORMATS_AVAILABLE = True
+except ImportError:
+    FILEFORMATS_AVAILABLE = False
 
 
 class XNATUploadError(Exception):
@@ -48,6 +57,36 @@ class XNATUploader:
     management and avoiding session leaks. Uses XNAT Alias Tokens for
     authentication instead of admin credentials.
     """
+
+    # Map file extensions to XNAT format types for auto-detection
+    FILE_FORMAT_MAP = {
+        '.nii': 'NIFTI',
+        '.nii.gz': 'NIFTI',
+        '.dcm': 'DICOM',
+        '.dicom': 'DICOM',
+        '.csv': 'CSV',
+        '.tsv': 'TSV',
+        '.txt': 'TEXT',
+        '.log': 'TEXT',
+        '.json': 'JSON',
+        '.xml': 'XML',
+        '.png': 'PNG',
+        '.jpg': 'JPEG',
+        '.jpeg': 'JPEG',
+        '.gif': 'GIF',
+        '.tif': 'TIFF',
+        '.tiff': 'TIFF',
+        '.bmp': 'BMP',
+        '.pdf': 'PDF',
+        '.zip': 'ZIP',
+        '.tar': 'TAR',
+        '.gz': 'GZIP',
+        '.mat': 'MATLAB',
+        '.py': 'PYTHON',
+        '.r': 'R',
+        '.html': 'HTML',
+        '.md': 'MARKDOWN',
+    }
 
     # Map session types to scan types and xnatpy class names
     SESSION_TYPE_MAP = {
@@ -182,6 +221,64 @@ class XNATUploader:
         """Cleanup on object destruction"""
         self._close_session()
 
+    @classmethod
+    def detect_file_format(cls, file_path: Union[str, Path]) -> str:
+        """
+        Auto-detect file format from file extension and magic numbers.
+
+        Uses the fileformats library if available for more accurate detection,
+        falling back to extension-based detection.
+
+        Args:
+            file_path: Path to the file
+
+        Returns:
+            XNAT format type string (e.g., 'NIFTI', 'DICOM', 'CSV', 'OTHER')
+        """
+        path = Path(file_path)
+        name = path.name.lower()
+
+        # Try fileformats library first for better detection
+        if FILEFORMATS_AVAILABLE and path.exists() and path.is_file():
+            try:
+                matches = list(find_matching(path))
+                if matches:
+                    # Get the most specific match
+                    match_name = type(matches[0]).__name__.lower()
+
+                    # Map fileformats class names to XNAT format types
+                    if 'nifti' in match_name:
+                        return 'NIFTI'
+                    elif 'dicom' in match_name:
+                        return 'DICOM'
+                    elif 'analyze' in match_name:
+                        return 'ANALYZE'
+                    elif 'minc' in match_name:
+                        return 'MINC'
+                    elif 'mgh' in match_name or 'mgz' in match_name:
+                        return 'MGH'
+                    elif 'nrrd' in match_name:
+                        return 'NRRD'
+                    elif 'gifti' in match_name:
+                        return 'GIFTI'
+                    # Add more mappings as needed
+            except Exception:
+                pass  # Fall back to extension-based detection
+
+        # Extension-based fallback detection
+
+        # Handle special case: .nii.gz (compound extension)
+        if name.endswith('.nii.gz'):
+            return 'NIFTI'
+
+        # Handle special case: .tar.gz
+        if name.endswith('.tar.gz'):
+            return 'TAR'
+
+        # Get the suffix and look up in map
+        suffix = path.suffix.lower()
+        return cls.FILE_FORMAT_MAP.get(suffix, 'OTHER')
+
     def validate_credentials(self) -> Dict:
         """
         Validate alias token credentials with XNAT
@@ -245,11 +342,14 @@ class XNATUploader:
                 'error': f'Connection error: {str(e)}'
             }
 
-    def get_accessible_projects(self) -> List[Dict]:
+    def get_accessible_projects(self, writable_only: bool = True) -> List[Dict]:
         """
         Get list of projects the authenticated user can access
 
         Uses xnatpy's session.projects which returns an XNATListing
+
+        Args:
+            writable_only: If True, only return projects where user can upload (Owners/Members/Collaborators)
 
         Returns:
             List of project dictionaries with ID, name, description, and user's role
@@ -263,6 +363,10 @@ class XNATUploader:
 
                     # Get user's role in this project
                     role = self._get_user_role_in_project(session, project_id)
+
+                    # Skip projects where user only has read access if writable_only is True
+                    if writable_only and role not in ['Owners', 'Members', 'Collaborators']:
+                        continue
 
                     projects.append({
                         'id': project_id,
@@ -490,8 +594,8 @@ class XNATUploader:
         else:
             upload_uri = resource_uri
 
-        # Use xnatpy's upload method
-        session.upload(upload_uri, str(file_path))
+        # Use xnatpy's upload_file method (avoids deprecation warning)
+        session.upload_file(upload_uri, str(file_path))
 
         return {
             'uri': resource_uri,

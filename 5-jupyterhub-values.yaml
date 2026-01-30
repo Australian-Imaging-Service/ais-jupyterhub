@@ -314,6 +314,25 @@ hub:
                   'args': [init_script],
                   'volumeMounts': [{'name': 'xnat-gpfs', 'mountPath': '/data/xnat'}],
                   'securityContext': {'runAsUser': 0}
+              },
+              {
+                  'name': 'install-xnat-extension',
+                  'image': 'python:3.11-slim',
+                  'command': ['sh', '-c'],
+                  'args': ['''
+                      set -e
+                      echo "[XNAT Extension] Installing extension and dependencies..."
+                      pip install --quiet --target=/xnat-ext/deps xnat requests fileformats fileformats-medimage
+                      mkdir -p /xnat-ext/xnat_upload_extension
+                      cp /opt/xnat-upload-extension/__init__.py /xnat-ext/xnat_upload_extension/
+                      cp /opt/xnat-upload-extension/handlers.py /xnat-ext/xnat_upload_extension/
+                      chmod +x /opt/xnat-upload-extension/neurodesk_server.py 2>/dev/null || true
+                      echo "[XNAT Extension] Installation complete"
+                  '''],
+                  'volumeMounts': [
+                      {'name': 'xnat-upload-extension', 'mountPath': '/opt/xnat-upload-extension', 'readOnly': True},
+                      {'name': 'xnat-ext-shared', 'mountPath': '/xnat-ext'}
+                  ]
               }
           ]
 
@@ -430,7 +449,7 @@ proxy:
 singleuser:
   defaultUrl: /lab
 
-  # Reduce termination grace period to prevent stuck pods
+  # Extra pod configuration
   extraPodConfig:
     terminationGracePeriodSeconds: 10
 
@@ -449,9 +468,38 @@ singleuser:
         import logging
         logging.getLogger('ServerApp').setLevel(logging.INFO)
 
+        # XNAT Upload Extension - load from init container shared volume
+        import sys
+        import os
+        # Add extension and dependencies to path
+        ext_path = '/xnat-ext'
+        deps_path = '/xnat-ext/deps'
+        if os.path.exists(deps_path) and deps_path not in sys.path:
+            sys.path.insert(0, deps_path)
+        if os.path.exists(ext_path) and ext_path not in sys.path:
+            sys.path.insert(0, ext_path)
+        c.ServerApp.jpserver_extensions.update({'xnat_upload_extension': True})
+
+        # ServerProxy configuration for XNAT Upload launcher icon
+        # Use update() to preserve existing ServerProxy servers (RStudio, etc.)
+        if not hasattr(c.ServerProxy, 'servers') or c.ServerProxy.servers is None:
+            c.ServerProxy.servers = {}
+        c.ServerProxy.servers.update({
+            'xnat-upload': {
+                'command': ['python3', '/opt/xnat-upload-extension/neurodesk_server.py', '--port', '{port}'],
+                'port': 5050,
+                'timeout': 30,
+                'launcher_entry': {
+                    'enabled': True,
+                    'title': 'XNAT Upload',
+                    'icon_path': '/opt/xnat-upload-extension/xnat_icon.svg'
+                }
+            }
+        })
+
   image:
     name: ghcr.io/neurodesk/neurodesktop/neurodesktop
-    tag: "2025-09-23"
+    tag: "2026-01-28"
     pullPolicy: IfNotPresent
 
   # Resource limits and guarantees
@@ -478,11 +526,22 @@ singleuser:
       - name: cvmfs
         persistentVolumeClaim:
           claimName: cvmfs
+      - name: xnat-upload-extension
+        configMap:
+          name: xnat-upload-extension
+          defaultMode: 0755
+      - name: xnat-ext-shared
+        emptyDir: {}
 
     extraVolumeMounts:
       - name: cvmfs
         mountPath: /cvmfs
         mountPropagation: HostToContainer
+      - name: xnat-upload-extension
+        mountPath: /opt/xnat-upload-extension
+        readOnly: true
+      - name: xnat-ext-shared
+        mountPath: /xnat-ext
 
   # Environment variables
   extraEnv:
