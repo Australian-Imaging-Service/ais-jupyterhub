@@ -137,6 +137,160 @@ helm get values cvmfs-csi -n mounts | grep kubeletDirectory
 sudo ls -la /var/lib/cvmfs/
 ```
 
+#### Problem: CVMFS Trace Parser not running
+```bash
+# Check trace parser pod status
+kubectl get pods -n mounts -l app=cvmfs-trace-parser
+
+# Check trace parser logs
+kubectl logs -n mounts -l app=cvmfs-trace-parser -c parser
+
+# Check Telegraf sidecar logs
+kubectl logs -n mounts -l app=cvmfs-trace-parser -c telegraf
+
+# Verify RBAC is configured correctly
+kubectl get serviceaccount -n mounts cvmfs-file-retriever
+kubectl get role -n mounts cvmfs-file-retriever
+kubectl get rolebinding -n mounts cvmfs-file-retriever
+
+# Redeploy trace parser components
+kubectl apply -f cvmfs_mount/templates/file-retriever-rbac.yaml
+kubectl apply -f cvmfs_mount/templates/trace-parser-config.yaml
+kubectl apply -f cvmfs_mount/templates/parser-script-configmap.yaml
+kubectl apply -f cvmfs_mount/templates/trace-parser-service.yaml
+kubectl apply -f cvmfs_mount/templates/trace-parser-deployment.yaml
+```
+
+#### Problem: CVMFS metrics not appearing
+```bash
+# Test metrics endpoint directly
+kubectl port-forward -n mounts svc/cvmfs-metrics 9002:9002 &
+curl http://localhost:9002/metrics
+
+# Check if trace files are being generated
+kubectl exec -n mounts $(kubectl get pods -n mounts -l app=cvmfs-csi,component=nodeplugin -o name | head -1 | cut -d/ -f2) -c automount -- ls -la /tmp/cvmfs-trace-*.log
+
+# Verify InfluxDB endpoint is configured in values.yaml
+grep -A3 CVMFS_INFLUX cvmfs_mount/values.yaml
+
+# Check ServiceMonitor is created
+kubectl get servicemonitor -n mounts cvmfs-metrics
+```
+
+#### Problem: Telegraf not receiving metrics from CVMFS
+```bash
+# Check Telegraf metrics endpoint
+kubectl port-forward -n mounts svc/cvmfs-metrics 9001:9001 &
+curl http://localhost:9001/metrics
+
+# Verify UDP port is listening
+kubectl exec -n mounts $(kubectl get pods -n mounts -l app=cvmfs-trace-parser -o name | head -1 | cut -d/ -f2) -c telegraf -- netstat -tuln | grep 8092
+
+# Check Telegraf configuration
+kubectl get configmap -n mounts telegraf-config -o yaml
+```
+
+### 3.5. Prometheus Monitoring Issues
+
+#### Problem: Prometheus stack installation fails
+```bash
+# Check if monitoring namespace exists
+kubectl get namespace monitoring
+
+# Create if missing
+kubectl create namespace monitoring
+
+# Check Helm repo is added
+helm repo list | grep prometheus-community
+
+# Add repo if missing
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+
+# Check for existing installations
+helm list -n monitoring
+
+# Uninstall and reinstall if needed
+helm uninstall prometheus -n monitoring
+./7-monitoring.sh
+```
+
+#### Problem: Prometheus pods not starting
+```bash
+# Check pod status
+kubectl get pods -n monitoring
+
+# Check events
+kubectl get events -n monitoring --sort-by='.lastTimestamp'
+
+# Check Prometheus operator logs
+kubectl logs -n monitoring -l app.kubernetes.io/name=prometheus-operator
+
+# Check Prometheus server logs
+kubectl logs -n monitoring -l app.kubernetes.io/name=prometheus
+
+# Verify PVC is bound (for persistent storage)
+kubectl get pvc -n monitoring
+```
+
+#### Problem: Grafana not accessible
+```bash
+# Check Grafana pod status
+kubectl get pods -n monitoring -l app.kubernetes.io/name=grafana
+
+# Check Grafana logs
+kubectl logs -n monitoring -l app.kubernetes.io/name=grafana
+
+# Verify NodePort service
+kubectl get svc -n monitoring | grep grafana
+# Should show NodePort 31000
+
+# Access Grafana
+# URL: http://<node-ip>:31000
+# Default credentials: admin / admin
+
+# If using port-forward instead
+kubectl port-forward -n monitoring svc/prometheus-grafana 3000:80
+# Then access: http://localhost:3000
+```
+
+#### Problem: Prometheus not scraping CVMFS metrics
+```bash
+# Check ServiceMonitor is detected
+kubectl get servicemonitor --all-namespaces
+
+# Verify Prometheus is configured to discover all ServiceMonitors
+kubectl get prometheus -n monitoring -o yaml | grep -A5 serviceMonitorSelector
+# Should show empty selector {} for all namespaces
+
+# Check Prometheus targets
+kubectl port-forward -n monitoring svc/prometheus-kube-prometheus-prometheus 9090:9090 &
+# Open: http://localhost:9090/targets
+# Look for cvmfs-metrics target
+
+# If target missing, check ServiceMonitor labels
+kubectl get servicemonitor -n mounts cvmfs-metrics -o yaml
+
+# Verify service exists and has correct labels
+kubectl get svc -n mounts cvmfs-metrics -o yaml | grep -A5 labels
+```
+
+#### Problem: AlertManager not sending alerts
+```bash
+# Check AlertManager status
+kubectl get pods -n monitoring -l app.kubernetes.io/name=alertmanager
+
+# Check AlertManager logs
+kubectl logs -n monitoring -l app.kubernetes.io/name=alertmanager
+
+# Access AlertManager UI
+kubectl port-forward -n monitoring svc/prometheus-kube-prometheus-alertmanager 9093:9093
+# Open: http://localhost:9093
+
+# Check alert rules
+kubectl get prometheusrules --all-namespaces
+```
+
 ### 4. Security Profiles Operator Issues
 
 #### Problem: spod pod in CrashLoopBackOff
@@ -150,7 +304,7 @@ kubectl get daemonset spod -n security -o yaml | grep KUBELET_ROOT
 
 # Should show: /var/snap/microk8s/common/var/lib/kubelet
 # If not, re-run security setup:
-./7-security-setup.sh
+./8-security-setup.sh
 ```
 
 #### Problem: AppArmor profile not loading
@@ -210,7 +364,7 @@ kubectl delete mutatingwebhookconfiguration spo-mutating-webhook-configuration
 kubectl delete validatingwebhookconfiguration spo-validating-webhook-configuration
 
 # Then re-run installation
-./7-security-setup.sh
+./8-security-setup.sh
 ```
 
 #### Problem: Need to manually remove AppArmor profile from host
@@ -908,6 +1062,46 @@ kubectl top pod -n jupyter -l component=singleuser-server
 watch kubectl get pvc -n jupyter
 ```
 
+#### Prometheus Monitoring Commands
+```bash
+# Access Prometheus UI
+kubectl port-forward -n monitoring svc/prometheus-kube-prometheus-prometheus 9090:9090 &
+# Open: http://localhost:9090
+
+# Access Grafana dashboard
+# URL: http://<node-ip>:31000
+# Credentials: admin / admin
+
+# Check all Prometheus targets
+curl -s http://localhost:9090/api/v1/targets | jq '.data.activeTargets[] | {job: .labels.job, health: .health}'
+
+# Query CVMFS module opens
+curl -s 'http://localhost:9090/api/v1/query?query=cvmfs_module_opens_total' | jq
+
+# Check Prometheus storage usage
+kubectl exec -n monitoring prometheus-prometheus-kube-prometheus-prometheus-0 -- df -h /prometheus
+
+# View active alerts
+curl -s http://localhost:9090/api/v1/alerts | jq '.data.alerts'
+```
+
+#### CVMFS Metrics Verification
+```bash
+# Check CVMFS trace parser is exposing metrics
+kubectl port-forward -n mounts svc/cvmfs-metrics 9002:9002 &
+curl http://localhost:9002/metrics
+
+# Check for specific CVMFS metrics
+curl -s http://localhost:9002/metrics | grep cvmfs_module_opens
+
+# Verify trace file is being generated
+POD=$(kubectl get pods -n mounts -l app=cvmfs-csi,component=nodeplugin -o name | head -1 | cut -d/ -f2)
+kubectl exec -n mounts $POD -c automount -- cat /tmp/cvmfs-trace-neurodesk.ardc.edu.au.log | head -20
+
+# Check parser is reading trace files
+kubectl logs -n mounts -l app=cvmfs-trace-parser -c parser | tail -20
+```
+
 #### Security Audit
 ```bash
 # Check for exposed secrets
@@ -1000,6 +1194,9 @@ kubectl get pvc -n jupyter
 # 3. If stuck, force cleanup
 kubectl delete namespace jupyter --force --grace-period=0
 kubectl delete namespace longhorn-system --force --grace-period=0
+kubectl delete namespace monitoring --force --grace-period=0
+kubectl delete namespace mounts --force --grace-period=0
+kubectl delete namespace security --force --grace-period=0
 
 # 4. Clean orphaned PVs
 kubectl get pv | grep -E "jupyter|longhorn" | awk '{print $1}' | xargs kubectl delete pv
@@ -1016,19 +1213,28 @@ bash 6-cvmfs-mounts.sh
 # Wait for CVMFS to be ready
 kubectl wait --for=condition=ready pod -l app=smarter-device-manager -n mounts --timeout=300s
 
-bash 7-security-setup.sh
+bash 7-monitoring.sh
+# Wait for Prometheus stack to be ready
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=prometheus -n monitoring --timeout=300s
+
+bash 8-security-setup.sh
 # Wait for Security Profiles Operator to be ready
 kubectl wait --for=condition=ready pod -l app=spod -n security --timeout=300s
 
-bash 8-install-jupyterhub.sh
+bash 9-install-jupyterhub.sh
 # Wait for JupyterHub to be ready
 kubectl wait --for=condition=ready pod -l component=hub -n jupyter --timeout=300s
 
 # Verify all components
 kubectl get pods -n jupyter
 kubectl get pods -n mounts
+kubectl get pods -n monitoring
 kubectl get pods -n security
 kubectl get apparmorprofile -n security
+
+# Verify metrics are flowing
+kubectl port-forward -n mounts svc/cvmfs-metrics 9002:9002 &
+curl http://localhost:9002/metrics
 ```
 
 ## Key Log Locations

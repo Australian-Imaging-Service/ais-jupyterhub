@@ -111,6 +111,21 @@ Complete integration of JupyterHub with XNAT on Kubernetes.
   - Provides access to scientific software repositories
   - Mounted at `/cvmfs` in user notebooks
   - Uses smarter-device-manager for FUSE device access
+  - Trace parser for metrics collection
+  - Telegraf for InfluxDB to Prometheus conversion
+
+#### Monitoring Layer
+- **Prometheus Stack:**
+  - Prometheus for metrics collection and alerting
+  - Grafana for visualization (NodePort 31000)
+  - AlertManager for alert routing
+  - ServiceMonitor discovery from all namespaces
+
+- **CVMFS Metrics:**
+  - Trace parser reads CVMFS trace files
+  - Exposes module usage metrics (`cvmfs_module_opens_total`)
+  - Telegraf converts InfluxDB format to Prometheus
+  - Combined metrics endpoint on port 9002
 
 #### Security Layer
 - **Security Profiles Operator (neurodesk fork):**
@@ -235,7 +250,7 @@ kubectl get pvc -n jupyter
 # Should show STATUS: Bound
 ```
 
-### Step 6: Install CVMFS CSI Driver
+### Step 6: Install CVMFS CSI Driver and Metrics
 
 ```bash
 chmod +x 6-cvmfs-mounts.sh
@@ -247,6 +262,9 @@ This installs:
 - smarter-device-manager for FUSE device access
 - Node labels for device management
 - CVMFS StorageClass configuration
+- CVMFS trace parser for metrics collection
+- Telegraf for InfluxDB to Prometheus conversion
+- ServiceMonitor for Prometheus scraping
 
 **Expected time:** 2-3 minutes
 
@@ -254,13 +272,41 @@ Verify:
 ```bash
 kubectl get pods -n mounts -l app=smarter-device-manager
 # Should show DaemonSet pods running on all nodes
+
+kubectl get pods -n mounts -l app=cvmfs-trace-parser
+# Should show trace parser pod running
 ```
 
-### Step 7: Install Security Profiles Operator
+### Step 7: Install Prometheus Monitoring Stack
 
 ```bash
-chmod +x 7-security-setup.sh
-./7-security-setup.sh
+chmod +x 7-monitoring.sh
+./7-monitoring.sh
+```
+
+This installs:
+- Prometheus for metrics collection
+- Grafana for visualization (accessible at NodePort 31000)
+- AlertManager for alerting
+- ServiceMonitor discovery from all namespaces
+
+**Expected time:** 5-10 minutes
+
+Verify:
+```bash
+kubectl get pods -n monitoring
+# Should show prometheus, grafana, alertmanager pods running
+```
+
+Access Grafana:
+- URL: `http://<node-ip>:31000`
+- Default credentials: admin / admin
+
+### Step 8: Install Security Profiles Operator
+
+```bash
+chmod +x 8-security-setup.sh
+./8-security-setup.sh
 ```
 
 This installs:
@@ -276,11 +322,11 @@ kubectl get apparmorprofile -n security
 # Should show: notebook   Installed   True
 ```
 
-### Step 8: Install JupyterHub
+### Step 9: Install JupyterHub
 
 ```bash
-chmod +x 8-install-jupyterhub.sh
-./8-install-jupyterhub.sh
+chmod +x 9-install-jupyterhub.sh
+./9-install-jupyterhub.sh
 ```
 
 This installs:
@@ -293,7 +339,7 @@ This installs:
 
 **Expected time:** 5-10 minutes
 
-### Step 9: Verify Installation
+### Step 10: Verify Installation
 
 Manual verification checks:
 ```bash
@@ -313,7 +359,7 @@ kubectl get pods -n longhorn-system
 
 **All components should be running before proceeding.**
 
-### Step 10: Configure XNAT Plugin
+### Step 11: Configure XNAT Plugin
 
 Follow detailed guide in `XNAT-CONFIGURATION.md`:
 
@@ -388,6 +434,69 @@ cull:
   every: 600       # Check interval (10 minutes)
 ```
 
+### Monitoring Configuration
+
+#### monitoring/values.yaml
+Prometheus stack configuration:
+- Prometheus server with 20Gi storage
+- Grafana on NodePort 31000
+- AlertManager for alerts
+- ServiceMonitor discovery from all namespaces
+
+#### Change Grafana Admin Password
+Edit `monitoring/values.yaml`:
+```yaml
+grafana:
+  adminPassword: your-secure-password
+```
+
+#### Adjust Prometheus Storage
+Edit `monitoring/values.yaml`:
+```yaml
+prometheus:
+  prometheusSpec:
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          resources:
+            requests:
+              storage: 50Gi  # Increase for longer retention
+```
+
+#### Change Metrics Retention
+Edit `monitoring/values.yaml`:
+```yaml
+prometheus:
+  prometheusSpec:
+    retention: 30d        # Keep metrics for 30 days
+    retentionSize: "45GB" # Or limit by size
+```
+
+#### Access Monitoring
+
+**Grafana Dashboard:**
+```bash
+# Direct access via NodePort
+http://<node-ip>:31000
+# Default credentials: admin / admin
+
+# Or via port-forward
+kubectl port-forward -n monitoring svc/prometheus-grafana 3000:80
+# Then access: http://localhost:3000
+```
+
+**Prometheus UI:**
+```bash
+kubectl port-forward -n monitoring svc/prometheus-kube-prometheus-prometheus 9090:9090
+# Then access: http://localhost:9090
+```
+
+**CVMFS Metrics Endpoint:**
+```bash
+kubectl port-forward -n mounts svc/cvmfs-metrics 9002:9002
+curl http://localhost:9002/metrics
+```
+
 ---
 
 ## 🧪 Testing
@@ -436,6 +545,29 @@ kubectl exec -n jupyter jupyter-<testuser> -- ls -la /data/xnat/projects/
 
 # Check home directory
 kubectl exec -n jupyter jupyter-<testuser> -- ls -la /home/jovyan/
+```
+
+### Test 4: Monitoring
+
+```bash
+# Check Prometheus is scraping targets
+kubectl port-forward -n monitoring svc/prometheus-kube-prometheus-prometheus 9090:9090 &
+curl -s http://localhost:9090/api/v1/targets | jq '.data.activeTargets | length'
+# Should show number of active targets
+
+# Check CVMFS metrics are available
+kubectl port-forward -n mounts svc/cvmfs-metrics 9002:9002 &
+curl -s http://localhost:9002/metrics | grep cvmfs
+# Should show CVMFS metrics
+
+# Access Grafana
+# Open: http://<node-ip>:31000
+# Login with: admin / admin
+# Navigate to Explore → Select Prometheus → Query: cvmfs_module_opens_total
+
+# Verify trace parser is running
+kubectl logs -n mounts -l app=cvmfs-trace-parser -c parser --tail=10
+# Should show parsing activity
 ```
 
 ---
@@ -556,15 +688,18 @@ Use this checklist to track your installation:
 - [ ] Jupyter namespace created
 - [ ] NFS PVs created (`3-nfs-pv.yaml`)
 - [ ] NFS PVC created and bound (`4-nfs-pvc.yaml`)
-- [ ] CVMFS CSI driver installed (`6-cvmfs-mounts.sh`)
-- [ ] Security Profiles Operator installed (`7-security-setup.sh`)
+- [ ] CVMFS CSI driver and metrics installed (`6-cvmfs-mounts.sh`)
+- [ ] Prometheus monitoring stack installed (`7-monitoring.sh`)
+- [ ] Security Profiles Operator installed (`8-security-setup.sh`)
 - [ ] AppArmor profile verified (status: Installed)
-- [ ] JupyterHub installed (`8-install-jupyterhub.sh`)
-- [ ] All components verified (JupyterHub, Security, CVMFS, Longhorn)
+- [ ] JupyterHub installed (`9-install-jupyterhub.sh`)
+- [ ] All components verified (JupyterHub, Security, CVMFS, Longhorn, Monitoring)
 - [ ] XNAT plugin configured (`XNAT-CONFIGURATION.md`)
+- [ ] XNAT upload extension deployed (`10-xnat-upload-extension.yaml`)
 - [ ] Test user workflow completed
 - [ ] AppArmor enforcement verified in user pods
 - [ ] CVMFS mount verified in user pods
+- [ ] CVMFS metrics verified in Prometheus
 - [ ] Production settings reviewed
 
 ---

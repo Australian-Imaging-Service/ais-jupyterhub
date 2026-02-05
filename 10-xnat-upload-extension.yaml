@@ -1,7 +1,7 @@
 ---
 # XNAT Upload Extension ConfigMap
 # ================================
-# Deploy with: kubectl apply -f 9-xnat-upload-extension.yaml -n jupyter
+# Deploy with: kubectl apply -f 10-xnat-upload-extension.yaml -n jupyter
 # Then upgrade JupyterHub: helm upgrade jupyterhub jupyterhub/jupyterhub -n jupyter -f 5-jupyterhub-values.yaml
 #
 # This ConfigMap contains the XNAT Upload server extension that provides
@@ -967,7 +967,7 @@ data:
 
         def authenticate(self, data):
             global xnat_session, authenticated_user
-            alias, secret = data.get('alias', ''), data.get('secret', '')
+            alias, secret = data.get('alias', '').strip(), data.get('secret', '').strip()
             if not alias or not secret:
                 return self.send_json({'valid': False, 'error': 'Credentials required'}, 400)
             if not xnat:

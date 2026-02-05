@@ -8,7 +8,6 @@ A JupyterLab extension for uploading medical imaging files (NIfTI, DICOM) and ot
 - **Secure Authentication**: Uses XNAT Alias Tokens (no shared passwords)
 - **Permission-Based Projects**: Only shows projects where user has upload rights
 - **Visual File Browser**: Browse workspace files with checkboxes for selection
-- **Drag & Drop Support**: Drag files from JupyterLab's file browser
 - **Flexible Upload Hierarchy**: Upload to project, subject, session, or scan level
 - **Auto File Format Detection**: Detects NIfTI, DICOM, CSV, and other formats
 - **Upload Verification**: Confirms each file is stored in XNAT
@@ -26,10 +25,10 @@ This extension is deployed via Kubernetes ConfigMap and JupyterHub Helm values. 
 
 ### Step 1: Apply the ConfigMap
 
-The extension code is contained in `9-xnat-upload-extension.yaml`. Apply it to your cluster:
+The extension code is contained in `10-xnat-upload-extension.yaml`. Apply it to your cluster:
 
 ```bash
-kubectl apply -f 9-xnat-upload-extension.yaml -n <your-namespace>
+kubectl apply -f 10-xnat-upload-extension.yaml -n jupyter
 ```
 
 This ConfigMap contains:
@@ -104,7 +103,7 @@ singleuser:
 ```bash
 helm upgrade --install jupyterhub jupyterhub/jupyterhub \
   -f 5-jupyterhub-values.yaml \
-  -n <your-namespace>
+  -n jupyter
 ```
 
 ### Step 4: Restart User Pods
@@ -113,7 +112,7 @@ Existing user pods need to be restarted to pick up the changes:
 
 ```bash
 # Delete existing user pods (they will recreate on next login)
-kubectl delete pods -l component=singleuser-server -n <your-namespace>
+kubectl delete pods -l component=singleuser-server -n jupyter
 ```
 
 ## Usage
@@ -196,12 +195,12 @@ The extension can access files in these directories:
 
 1. Check ConfigMap is applied:
    ```bash
-   kubectl get configmap xnat-upload-extension -n <namespace>
+   kubectl get configmap xnat-upload-extension -n jupyter
    ```
 
 2. Check pod has the volume mounted:
    ```bash
-   kubectl exec -it <pod-name> -n <namespace> -- ls -la /opt/xnat-upload-extension/
+   kubectl exec -it <pod-name> -n jupyter -- ls -la /opt/xnat-upload-extension/
    ```
 
 3. Restart the user pod to pick up changes
